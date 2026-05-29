@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>About Us — Gasp Machine</title>
+  <meta name="description" content="Meet the members of Gasp Machine, our magic club." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Audiowide&family=Poppins:wght@300;400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <!-- ===== NAV ===== -->
+  <nav class="nav">
+    <div class="nav__inner">
+      <a href="index.html" class="nav__logo">Gasp Machine</a>
+      <button class="nav__toggle" aria-label="Toggle menu">☰</button>
+      <ul class="nav__links">
+        <li><a href="index.html">Home</a></li>
+        <li><a href="about.html" class="active">About Us</a></li>
+        <li class="nav__dropdown">
+          <a href="archives.html">Archives</a>
+          <ul class="nav__menu">
+            <li><a href="archives.html">Previous Shows</a></li>
+          </ul>
+        </li>
+      </ul>
+    </div>
+  </nav>
+
+  <main class="container">
+    <h1 class="section-title">About Us</h1>
+    <p class="about-intro">
+      Gasp Machine is a magic club devoted to the craft of astonishment — close-up sleight
+      of hand, stage illusions, and volunteer shows that bring a little wonder wherever we go.
+      Here are the people behind the curtain.
+    </p>
+
+    <!-- To add a member, copy a .member block and edit the name, role, bio,
+         and avatar (use an <img class="member__avatar" src="..."> or keep the initial). -->
+    <section class="members">
+      <article class="member">
+        <img class="member__photo" src="img/Henry.webp" alt="Henry Chen" />
+        <div class="member__info">
+          <h2 class="member__name">Henry Chen</h2>
+          <p class="member__role">Founder &amp; Magician</p>
+          <p class="member__bio">
+            Henry founded Gasp Machine to share his love of magic with the community.
+            From polka-dot handkerchiefs to card miracles, he believes the best trick
+            is the smile that comes right after the gasp.
+          </p>
+        </div>
+      </article>
+    </section>
+  </main>
+
+  <footer>
+    <p>© <span id="year"></span> Gasp Machine · Magic Club</p>
+  </footer>
+
+  <script src="js/main.js"></script>
+</body>
+</html>

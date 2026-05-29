@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Archives — Gasp Machine</title>
+  <meta name="description" content="Watch previous shows from Gasp Machine, our magic club." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Audiowide&family=Poppins:wght@300;400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <!-- ===== NAV ===== -->
+  <nav class="nav">
+    <div class="nav__inner">
+      <a href="index.html" class="nav__logo">Gasp Machine</a>
+      <button class="nav__toggle" aria-label="Toggle menu">☰</button>
+      <ul class="nav__links">
+        <li><a href="index.html">Home</a></li>
+        <li><a href="about.html">About Us</a></li>
+        <li class="nav__dropdown">
+          <a href="archives.html" class="active">Archives</a>
+          <ul class="nav__menu">
+            <li><a href="archives.html">Previous Shows</a></li>
+          </ul>
+        </li>
+      </ul>
+    </div>
+  </nav>
+
+  <main class="container">
+    <h1 class="section-title">Previous Shows</h1>
+    <div id="shows" class="shows">
+      <p class="archive-status">Loading shows…</p>
+    </div>
+  </main>
+
+  <footer>
+    <p>© <span id="year"></span> Gasp Machine · Magic Club</p>
+  </footer>
+
+  <script src="js/main.js"></script>
+  <script src="js/config.js"></script>
+  <script src="js/archives.js"></script>
+</body>
+</html>

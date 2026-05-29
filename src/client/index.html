@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Gasp Machine — Magic Club</title>
+  <meta name="description" content="Gasp Machine — a magic club bringing wonder to the stage. Watch our shows and meet the team." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Audiowide&family=Poppins:wght@300;400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <!-- ===== NAV ===== -->
+  <nav class="nav">
+    <div class="nav__inner">
+      <a href="index.html" class="nav__logo">Gasp Machine</a>
+      <button class="nav__toggle" aria-label="Toggle menu">☰</button>
+      <ul class="nav__links">
+        <li><a href="index.html" class="active">Home</a></li>
+        <li><a href="about.html">About Us</a></li>
+        <li class="nav__dropdown">
+          <a href="archives.html">Archives</a>
+          <ul class="nav__menu">
+            <li><a href="archives.html">Previous Shows</a></li>
+          </ul>
+        </li>
+      </ul>
+    </div>
+  </nav>
+
+  <!-- ===== HERO ===== -->
+  <header class="hero">
+    <canvas id="magic-canvas"></canvas>
+    <div class="hero__content">
+      <p class="hero__kicker">Prepare to be amazed</p>
+      <h1 class="hero__title">Gasp Machine</h1>
+      <p class="hero__tagline">
+        A magic club built on wonder, sleight of hand, and the moment right before the gasp.
+        We perform, we volunteer, and we make the impossible look easy.
+      </p>
+      <div class="hero__actions">
+        <a href="archives.html" class="btn btn--solid">Watch Our Shows</a>
+        <a href="about.html" class="btn">Meet the Team</a>
+      </div>
+    </div>
+  </header>
+
+  <!-- ===== CONTACT ===== -->
+  <section class="contact" id="contact">
+    <h2>Get in Touch</h2>
+    <p>Want us at your event, school, or celebration? Reach out — we love a new audience.</p>
+    <div class="contact__methods">
+      <a class="contact__card" href="mailto:chenhenrybunny@gmail.com">
+        <span class="icon">✉️</span>
+        <span>chenhenrybunny@gmail.com</span>
+      </a>
+    </div>
+  </section>
+
+  <footer>
+    <p>© <span id="year"></span> Gasp Machine · Magic Club</p>
+  </footer>
+
+  <script src="js/main.js"></script>
+  <script src="js/magic-bg.js"></script>
+</body>
+</html>
