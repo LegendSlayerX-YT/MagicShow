@@ -1,0 +1,9 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "gasp-machine",
+  "compatibility_date": "2026-08-07",
+  // Static-only deployment for Cloudflare Workers.
+  "assets": {
+    "directory": "./src/client"
+  }
+}
