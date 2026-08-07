@@ -12,7 +12,6 @@
   var apiKey = cfg.apiKey || (rootCfg.youtube && rootCfg.youtube.apiKey) || '';
   var timeZone = cfg.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
   var rangeEl = document.getElementById('calendar-range');
-  var openEl = document.getElementById('calendar-open');
 
   function escapeHtml(s) {
     return String(s || '').replace(/[&<>"']/g, function (c) {
@@ -160,10 +159,6 @@
 
   if (rangeEl) {
     rangeEl.textContent = 'Showing ' + formatRangeDate(start) + ' through ' + formatRangeDate(endInclusive) + '.';
-  }
-
-  if (openEl) {
-    openEl.href = 'https://calendar.google.com/calendar/u/0/r?cid=' + encodeURIComponent(calendarId);
   }
 
   if (!apiKey) {
