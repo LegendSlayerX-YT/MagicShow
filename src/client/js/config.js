@@ -6,6 +6,11 @@
    a restricted API key, or fall back to the local list below.
    =========================================================== */
 window.CONFIG = {
+  calendar: {
+    id: 'chenhenrybunny@gmail.com',
+    timeZone: 'America/Los_Angeles'
+  },
+
   youtube: {
     // Restrict this key in Google Cloud to your production domain.
     apiKey: 'AIzaSyDKsMcoMziORDNAQ-5yCbG7BvG_BWMBxgk',

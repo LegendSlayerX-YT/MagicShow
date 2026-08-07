@@ -374,6 +374,54 @@ footer {
 .member__bio { color: var(--cream-dim); font-size: 0.96rem; }
 
 /* ===========================================================
+   CALENDAR
+   =========================================================== */
+.calendar-intro {
+  max-width: 760px;
+  margin: 0 auto 32px;
+  text-align: center;
+  font-size: 1.08rem;
+  color: var(--cream-dim);
+}
+
+.calendar-panel {
+  background: rgba(0, 0, 0, 0.18);
+  border: 1px solid rgba(245, 233, 224, 0.14);
+  border-radius: 22px;
+  padding: 26px;
+  margin-bottom: 80px;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.24);
+}
+
+.calendar-panel__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 22px;
+  flex-wrap: wrap;
+}
+
+.calendar-panel__range {
+  color: var(--cream-dim);
+  font-size: 0.98rem;
+}
+
+.calendar-embed {
+  min-height: 720px;
+  border-radius: 18px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.94);
+}
+
+.calendar-embed iframe {
+  display: block;
+  width: 100%;
+  min-height: 720px;
+  border: 0;
+}
+
+/* ===========================================================
    ARCHIVES — zigzag video grid
    =========================================================== */
 .shows { padding-bottom: 80px; }
@@ -544,4 +592,7 @@ footer {
   .show__text { text-align: center; }
 
   .show-card { flex-basis: 78vw; max-width: 78vw; }
+  .calendar-panel { padding: 18px; }
+  .calendar-embed,
+  .calendar-embed iframe { min-height: 620px; }
 }

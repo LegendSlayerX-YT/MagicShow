@@ -3,15 +3,14 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Archives — Gasp Machine</title>
-  <meta name="description" content="Watch previous shows from Gasp Machine, our magic club." />
+  <title>Calendar — Gasp Machine</title>
+  <meta name="description" content="See upcoming and recent Gasp Machine events on our public calendar." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Audiowide&family=Poppins:wght@300;400;500;600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="css/styles.css" />
 </head>
 <body>
-  <!-- ===== NAV ===== -->
   <nav class="nav">
     <div class="nav__inner">
       <a href="index.html" class="nav__logo">Gasp Machine</a>
@@ -19,9 +18,9 @@
       <ul class="nav__links">
         <li><a href="index.html">Home</a></li>
         <li><a href="about.html">About Us</a></li>
-        <li><a href="calendar.html">Calendar</a></li>
+        <li><a href="calendar.html" class="active">Calendar</a></li>
         <li class="nav__dropdown">
-          <a href="archives.html" class="active">Archives</a>
+          <a href="archives.html">Archives</a>
           <ul class="nav__menu">
             <li><a href="archives.html">Previous Shows</a></li>
           </ul>
@@ -31,10 +30,21 @@
   </nav>
 
   <main class="container">
-    <h1 class="section-title">Previous Shows</h1>
-    <div id="shows" class="shows">
-      <p class="archive-status">Loading shows…</p>
-    </div>
+    <h1 class="section-title">Calendar</h1>
+    <p class="calendar-intro">
+      Browse recent and upcoming public events from our calendar. This view automatically
+      shows the rolling window from 3 days ago through 7 days ahead.
+    </p>
+
+    <section class="calendar-panel">
+      <div class="calendar-panel__meta">
+        <p id="calendar-range" class="calendar-panel__range">Loading calendar range…</p>
+        <a id="calendar-open" class="btn btn--solid" href="#" target="_blank" rel="noopener">Open Calendar</a>
+      </div>
+      <div id="calendar-frame-wrap" class="calendar-embed">
+        <p class="archive-status">Loading calendar…</p>
+      </div>
+    </section>
   </main>
 
   <footer>
@@ -43,6 +53,6 @@
 
   <script src="js/main.js"></script>
   <script src="js/config.js"></script>
-  <script src="js/archives.js"></script>
+  <script src="js/calendar.js"></script>
 </body>
 </html>
