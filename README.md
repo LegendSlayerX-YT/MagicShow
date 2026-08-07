@@ -5,7 +5,7 @@ Cloudflare and uses plain HTML, CSS, and frontend JavaScript.
 
 - **Home** (`index.html`) — welcome page with an animated "magic" background (drifting card suits + sparkles) and contact info.
 - **About Us** (`about.html`) — club member cards (currently Henry Chen).
-- **Calendar** (`calendar.html`) — public Google Calendar events shown in agenda view for the rolling window from 3 days ago through 7 days ahead.
+- **Calendar** (`calendar.html`) — public Google Calendar events fetched and rendered in a themed list for the rolling window from 3 days ago through 7 days ahead.
 - **Archives** (`archives.html`) — previous shows, pulled **live** from your public YouTube playlist in the browser, with a local fallback list.
 
 ---

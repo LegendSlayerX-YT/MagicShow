@@ -407,18 +407,92 @@ footer {
   font-size: 0.98rem;
 }
 
-.calendar-embed {
-  min-height: 720px;
-  border-radius: 18px;
-  overflow: hidden;
-  background: rgba(255, 255, 255, 0.94);
+.calendar-list {
+  display: grid;
+  gap: 18px;
 }
 
-.calendar-embed iframe {
-  display: block;
-  width: 100%;
-  min-height: 720px;
-  border: 0;
+.calendar-day {
+  border: 1px solid rgba(245, 233, 224, 0.14);
+  border-radius: 18px;
+  background:
+    linear-gradient(135deg, rgba(229, 31, 39, 0.16), rgba(0, 0, 0, 0.1)),
+    rgba(0, 0, 0, 0.22);
+  overflow: hidden;
+}
+
+.calendar-day__header {
+  padding: 18px 22px;
+  border-bottom: 1px solid rgba(245, 233, 224, 0.1);
+  background: rgba(0, 0, 0, 0.14);
+}
+
+.calendar-day__weekday {
+  font-family: 'Audiowide', cursive;
+  font-size: 1rem;
+  letter-spacing: 1px;
+  color: var(--white);
+}
+
+.calendar-day__date {
+  color: var(--cream-dim);
+  font-size: 0.92rem;
+  margin-top: 6px;
+}
+
+.calendar-day__events {
+  display: grid;
+  gap: 14px;
+  padding: 20px 22px 22px;
+}
+
+.calendar-day__empty {
+  color: var(--cream-faint);
+  font-size: 0.98rem;
+}
+
+.calendar-event {
+  padding: 16px 18px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(245, 233, 224, 0.12);
+}
+
+.calendar-event__time {
+  color: var(--crimson-bright);
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  font-size: 0.76rem;
+  font-weight: 500;
+  margin-bottom: 8px;
+}
+
+.calendar-event__title {
+  font-family: 'Audiowide', cursive;
+  font-weight: 400;
+  font-size: 1.04rem;
+  line-height: 1.4;
+  margin-bottom: 8px;
+}
+
+.calendar-event__meta {
+  color: var(--cream-dim);
+  font-size: 0.95rem;
+  margin-top: 6px;
+}
+
+.calendar-event__link {
+  display: inline-block;
+  margin-top: 12px;
+  color: var(--crimson-bright);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-size: 0.78rem;
+  border-bottom: 1px solid transparent;
+}
+
+.calendar-event__link:hover {
+  border-bottom-color: var(--crimson-bright);
 }
 
 /* ===========================================================
@@ -593,6 +667,6 @@ footer {
 
   .show-card { flex-basis: 78vw; max-width: 78vw; }
   .calendar-panel { padding: 18px; }
-  .calendar-embed,
-  .calendar-embed iframe { min-height: 620px; }
+  .calendar-day__header,
+  .calendar-day__events { padding-left: 16px; padding-right: 16px; }
 }

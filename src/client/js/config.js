@@ -8,7 +8,10 @@
 window.CONFIG = {
   calendar: {
     id: 'chenhenrybunny@gmail.com',
-    timeZone: 'America/Los_Angeles'
+    timeZone: 'America/Los_Angeles',
+    // Enable Google Calendar API for this key in Google Cloud. If omitted,
+    // the site falls back to youtube.apiKey below.
+    apiKey: 'AIzaSyBmFqbuO5-Jlqg2gzpT2p4p5sZVESSWOgs'
   },
 
   youtube: {
