@@ -49,14 +49,49 @@
 
   <!-- ===== CONTACT ===== -->
   <section class="contact" id="contact">
-    <h2>Get in Touch</h2>
-    <p>Want us at your event, school, or celebration? Reach out — we love a new audience.</p>
-    <div class="contact__methods">
-      <a class="contact__card" href="mailto:chenhenrybunny@gmail.com">
-        <span class="icon">✉️</span>
-        <span>chenhenrybunny@gmail.com</span>
-      </a>
-    </div>
+    <h2>Contact Us</h2>
+    <p>Want us at your event, school, or celebration? Send us a note and we will get back to you.</p>
+    <form
+      class="contact__form"
+      id="contact-form"
+      action="https://formspree.io/f/mjybknrp"
+      method="POST"
+    >
+      <label class="contact__field" for="contact-email">
+        <span>Your Email</span>
+        <input
+          id="contact-email"
+          class="contact__input"
+          type="email"
+          name="email"
+          autocomplete="email"
+          inputmode="email"
+          placeholder="you@example.com"
+          data-fs-field
+          required
+        />
+        <span class="contact__status contact__status--inline" data-fs-error="email"></span>
+      </label>
+      <label class="contact__field" for="contact-message">
+        <span>Message</span>
+        <textarea
+          id="contact-message"
+          class="contact__input contact__input--message"
+          name="message"
+          rows="6"
+          placeholder="Tell us a little about your event or question."
+          data-fs-field
+          required
+        ></textarea>
+        <span class="contact__status contact__status--inline" data-fs-error="message"></span>
+      </label>
+      <input class="contact__trap" type="text" name="company" tabindex="-1" autocomplete="off" aria-hidden="true" />
+      <div class="contact__actions">
+        <button class="btn btn--solid" type="submit" data-fs-submit-btn>Send Message</button>
+        <p class="contact__status" data-fs-success aria-live="polite">Thanks for reaching out. We will get back to you soon.</p>
+        <p class="contact__status" data-fs-error aria-live="polite"></p>
+      </div>
+    </form>
   </section>
 
   <footer>
@@ -65,5 +100,12 @@
 
   <script src="js/main.js"></script>
   <script src="js/magic-bg.js"></script>
+  <script>
+    window.formspree = window.formspree || function () {
+      (formspree.q = formspree.q || []).push(arguments);
+    };
+    formspree('initForm', { formElement: '#contact-form', formId: 'mjybknrp' });
+  </script>
+  <script src="https://unpkg.com/@formspree/ajax@1" defer></script>
 </body>
 </html>

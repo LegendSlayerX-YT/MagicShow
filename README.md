@@ -3,7 +3,7 @@
 A fully static website for the Gasp Machine magic club. It can be hosted on
 Cloudflare and uses plain HTML, CSS, and frontend JavaScript.
 
-- **Home** (`index.html`) — welcome page with an animated "magic" background (drifting card suits + sparkles) and contact info.
+- **Home** (`index.html`) — welcome page with an animated "magic" background (drifting card suits + sparkles) and a contact form.
 - **About Us** (`about.html`) — club member cards (currently Henry Chen).
 - **Calendar** (`calendar.html`) — public Google Calendar events fetched and rendered in a themed list for the rolling window from 3 days ago through 7 days ahead.
 - **Archives** (`archives.html`) — previous shows, pulled **live** from your public YouTube playlist in the browser, with a local fallback list.
@@ -36,8 +36,6 @@ MagicShow/
 cd MagicShow
 python3 -m http.server 8000 --directory src/client
 ```
-
-Then open `http://localhost:8000`.
 
 ---
 
@@ -84,7 +82,7 @@ shows your shows.
 
 ## Editing content
 
-- **Contact email** — `src/client/index.html`, in the `.contact` section.
+- **Contact form** — `src/client/index.html`, in the `.contact` section.
 - **Club members** — `src/client/about.html`. Copy a `<article class="member">` block to add
   someone. Swap the letter avatar for a photo with
   `<img class="member__avatar" src="path/to/photo.jpg" alt="Name">`.
@@ -99,6 +97,12 @@ This project is ready for static hosting on Cloudflare Workers static assets.
 1. Install Wrangler if needed: `npm install -g wrangler`
 2. Log in: `wrangler login`
 3. Deploy from the repo root: `wrangler deploy`
+
+To keep the site static while still hiding your email address, the homepage
+contact form is set up for Formspree. Create a form in Formspree, then replace
+`YOUR_FORM_ID` in `src/client/index.html` with the form ID from your Formspree
+dashboard. After that, submissions can go through Formspree without showing
+your email in the page HTML.
 
 The provided `wrangler.jsonc` publishes `src/client` as the site's asset
 directory. After the first deploy, attach your custom domain in Cloudflare.

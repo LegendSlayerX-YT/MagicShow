@@ -1,1 +1,1 @@
-npx wrangler deploy
+npx wrangler dev
