@@ -22,5 +22,11 @@
     // Whether Google emails the guest when /api/register adds them:
     // "all" sends the invitation, "none" adds them silently.
     "CALENDAR_SEND_UPDATES": "all"
+  },
+  "observability": {
+    "logs": {
+      "enabled": false,
+      "invocation_logs": true
+    }
   }
 }
