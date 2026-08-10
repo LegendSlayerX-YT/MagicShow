@@ -10,9 +10,13 @@
 
   var rootCfg = window.CONFIG || {};
   var endpoint = (rootCfg.api && rootCfg.api.calendar) || '/api/calendar';
+  var registerEndpoint = (rootCfg.api && rootCfg.api.register) || '/api/register';
+  var EMAIL_STORE_KEY = 'gaspmachine:register-email';
   // Replaced by the relay's time zone once the response lands.
   var timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
   var rangeEl = document.getElementById('calendar-range');
+  // Set from the relay's response before render() runs — see the fetch below.
+  var registrationOpen = false;
 
   function escapeHtml(s) {
     return String(s || '').replace(/[&<>"']/g, function (c) {
@@ -92,6 +96,35 @@
     list.innerHTML = '<p class="archive-status">' + message + '</p>';
   }
 
+  // No point offering a seat at something that's already over. The Worker
+  // enforces the same rule; this just keeps the button from lying.
+  function hasEnded(event) {
+    var end = event.end || {};
+    if (end.dateTime) return Date.parse(end.dateTime) < Date.now();
+    if (end.date) return Date.parse(end.date + 'T23:59:59') < Date.now();
+    return true;
+  }
+
+  function registerMarkup(event) {
+    var id = escapeHtml(event.id);
+    return '' +
+      '<div class="calendar-register" data-event-id="' + id + '">' +
+        '<button type="button" class="btn btn--solid calendar-register__open">Register</button>' +
+        '<form class="calendar-register__form" hidden>' +
+          '<label class="calendar-register__field">' +
+            '<span>Your email</span>' +
+            '<input class="contact__input" type="email" name="email" required ' +
+              'autocomplete="email" placeholder="you@example.com" />' +
+          '</label>' +
+          '<div class="calendar-register__actions">' +
+            '<button type="submit" class="btn btn--solid">Send invite</button>' +
+            '<button type="button" class="btn calendar-register__cancel">Cancel</button>' +
+          '</div>' +
+        '</form>' +
+        '<p class="calendar-register__status" role="status"></p>' +
+      '</div>';
+  }
+
   function render(days, eventsByDay) {
     list.innerHTML = '';
 
@@ -109,6 +142,8 @@
         var summary = event.summary || 'Untitled event';
         var link = event.htmlLink ?
           '<a class="calendar-event__link" href="' + event.htmlLink + '" target="_blank" rel="noopener">View details</a>' : '';
+        var register = registrationOpen && event.id && !hasEnded(event) ?
+          registerMarkup(event) : '';
 
         return '' +
           '<article class="calendar-event">' +
@@ -117,6 +152,7 @@
             location +
             description +
             link +
+            register +
           '</article>';
       }).join('') : '<p class="calendar-day__empty">No public events.</p>';
 
@@ -138,6 +174,106 @@
     }
     return days;
   }
+
+  /* ---------- registration ---------- */
+
+  // Remembering the address means someone signing up for two shows only
+  // types it once. Private browsing throws on access, hence the try/catch.
+  function readStoredEmail() {
+    try {
+      return window.localStorage.getItem(EMAIL_STORE_KEY) || '';
+    } catch (err) {
+      return '';
+    }
+  }
+
+  function storeEmail(email) {
+    try {
+      window.localStorage.setItem(EMAIL_STORE_KEY, email);
+    } catch (err) {
+      /* nothing to do — the prefill is a convenience, not a requirement */
+    }
+  }
+
+  function setStatus(card, message, state) {
+    var el = card.querySelector('.calendar-register__status');
+    el.textContent = message;
+    el.className = 'calendar-register__status' +
+      (state ? ' calendar-register__status--' + state : '');
+  }
+
+  function toggleForm(card, open) {
+    card.querySelector('.calendar-register__open').hidden = open;
+    card.querySelector('.calendar-register__form').hidden = !open;
+  }
+
+  list.addEventListener('click', function (evt) {
+    var open = evt.target.closest('.calendar-register__open');
+    if (open) {
+      var card = open.closest('.calendar-register');
+      toggleForm(card, true);
+      setStatus(card, '');
+      var input = card.querySelector('input[name="email"]');
+      if (!input.value) input.value = readStoredEmail();
+      input.focus();
+      return;
+    }
+
+    var cancel = evt.target.closest('.calendar-register__cancel');
+    if (cancel) {
+      var cancelled = cancel.closest('.calendar-register');
+      toggleForm(cancelled, false);
+      setStatus(cancelled, '');
+    }
+  });
+
+  list.addEventListener('submit', function (evt) {
+    var form = evt.target.closest('.calendar-register__form');
+    if (!form) return;
+    evt.preventDefault();
+
+    var card = form.closest('.calendar-register');
+    var submit = form.querySelector('button[type="submit"]');
+    var input = form.querySelector('input[name="email"]');
+    var email = input.value.trim();
+    if (!email) return;
+
+    submit.disabled = true;
+    setStatus(card, 'Sending…');
+
+    fetch(registerEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ eventId: card.dataset.eventId, email: email })
+    })
+      .then(function (response) {
+        return response.json()
+          .catch(function () { return {}; })
+          .then(function (data) { return { ok: response.ok, data: data }; });
+      })
+      .then(function (result) {
+        if (!result.ok) {
+          setStatus(card, result.data.error || 'Something went wrong. Please try again.', 'error');
+          submit.disabled = false;
+          return;
+        }
+
+        storeEmail(email);
+        form.hidden = true;
+        setStatus(
+          card,
+          result.data.alreadyRegistered
+            ? email + ' is already on the guest list for this event.'
+            : 'You\'re on the guest list — ' + email + ' has been added as a guest.',
+          'success'
+        );
+      })
+      .catch(function (error) {
+        console.warn('Registration failed:', error);
+        setStatus(card, 'Could not reach the server. Please try again.', 'error');
+        submit.disabled = false;
+      });
+  });
 
   function fetchUrl(start, endExclusive) {
     var params = new URLSearchParams({
@@ -166,6 +302,7 @@
       // The relay reports the calendar's configured time zone; use it so
       // event times read the same for every visitor.
       if (data.timeZone) timeZone = data.timeZone;
+      registrationOpen = !!data.registrationOpen;
 
       var eventsByDay = {};
 

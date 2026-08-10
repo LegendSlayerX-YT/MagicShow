@@ -7,13 +7,21 @@
    down to what the pages actually render, and caches at the
    edge so we stay well inside the Google quotas.
 
+   /api/register is the one write path: it adds a visitor's
+   email to an event's guest list. API keys are read-only, so
+   that call runs on an OAuth refresh token for the calendar's
+   owner — see "calendar-owner auth" below.
+
    Everything that isn't /api/* is handed back to the static
    asset handler (src/client).
 
    Config:
      vars    — CALENDAR_ID, CALENDAR_TIME_ZONE,
-               YOUTUBE_PLAYLIST_ID, YOUTUBE_MAX_RESULTS
-     secrets — GOOGLE_CALENDAR_API_KEY, YOUTUBE_API_KEY
+               YOUTUBE_PLAYLIST_ID, YOUTUBE_MAX_RESULTS,
+               CALENDAR_SEND_UPDATES
+     secrets — GOOGLE_CALENDAR_API_KEY, YOUTUBE_API_KEY,
+               GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET,
+               GOOGLE_OAUTH_REFRESH_TOKEN
    =========================================================== */
 
 var CACHE_SECONDS = 300;
@@ -28,12 +36,19 @@ export default {
       return env.ASSETS ? env.ASSETS.fetch(request) : notFound();
     }
 
-    if (request.method !== 'GET' && request.method !== 'HEAD') {
+    if (request.method === 'POST') {
+      if (url.pathname === '/api/register') return handleRegister(request, env);
       return json({ error: 'Method not allowed' }, 405, { Allow: 'GET, HEAD' });
+    }
+
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      var allow = url.pathname === '/api/register' ? 'POST' : 'GET, HEAD';
+      return json({ error: 'Method not allowed' }, 405, { Allow: allow });
     }
 
     if (url.pathname === '/api/calendar') return handleCalendar(url, env);
     if (url.pathname === '/api/archives') return handleArchives(env);
+    if (url.pathname === '/api/register') return json({ error: 'Method not allowed' }, 405, { Allow: 'POST' });
 
     return notFound();
   }
@@ -71,7 +86,13 @@ async function handleCalendar(url, env) {
     .filter(function (event) { return event && event.status !== 'cancelled'; })
     .map(trimEvent);
 
-  return json({ timeZone: timeZone, events: events }, 200);
+  return json({
+    timeZone: timeZone,
+    // Keeps the page from showing a Register button that can only fail,
+    // e.g. between a deploy and the one-time OAuth setup.
+    registrationOpen: !!readOauthConfig(env),
+    events: events
+  }, 200);
 }
 
 async function handleArchives(env) {
@@ -119,12 +140,281 @@ async function handleArchives(env) {
   return json({ videos: videos }, 200);
 }
 
+/* ---------- registration ---------- */
+
+var MAX_ATTENDEES = 200;
+var RATE_WINDOW_MS = 60000;
+var RATE_MAX_HITS = 5;
+
+// Adds one attendee to one event. Everything here is written defensively:
+// the endpoint is unauthenticated, so a visitor could otherwise use it to
+// spam arbitrary addresses onto arbitrary events.
+async function handleRegister(request, env) {
+  var oauth = readOauthConfig(env);
+  if (!oauth || !env.CALENDAR_ID) {
+    return noStore(json({ error: 'Registration is not configured.' }, 503));
+  }
+
+  // Requiring JSON forces a CORS preflight for cross-origin callers, which a
+  // plain <form> POST from another site can't do.
+  var contentType = request.headers.get('Content-Type') || '';
+  if (contentType.indexOf('application/json') === -1) {
+    return noStore(json({ error: 'Expected application/json.' }, 415));
+  }
+
+  var origin = request.headers.get('Origin');
+  if (origin && origin !== new URL(request.url).origin) {
+    return noStore(json({ error: 'Cross-origin requests are not allowed.' }, 403));
+  }
+
+  var ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+  if (rateLimited(ip)) {
+    return noStore(json({ error: 'Too many attempts. Try again in a minute.' }, 429, { 'Retry-After': '60' }));
+  }
+
+  var body;
+  try {
+    body = await request.json();
+  } catch (err) {
+    return noStore(json({ error: 'Invalid request body.' }, 400));
+  }
+
+  var eventId = typeof body.eventId === 'string' ? body.eventId.trim() : '';
+  // Google event ids are base32hex plus `_` for recurring instances.
+  if (!eventId || eventId.length > 1024 || !/^[A-Za-z0-9_@.-]+$/.test(eventId)) {
+    return noStore(json({ error: 'Unknown event.' }, 400));
+  }
+
+  var email = normalizeEmail(body.email);
+  if (!email) {
+    return noStore(json({ error: 'Enter a valid email address.' }, 400));
+  }
+
+  var token = await getAccessToken(oauth);
+  if (token.error) return noStore(json({ error: token.error }, token.status));
+
+  var path = 'https://www.googleapis.com/calendar/v3/calendars/' +
+    encodeURIComponent(env.CALENDAR_ID) + '/events/' + encodeURIComponent(eventId);
+  var sendUpdates = env.CALENDAR_SEND_UPDATES || 'none';
+
+  // attendees is a whole-array field, so this is a read-modify-write.
+  // If-Match + retry keeps two simultaneous registrations from clobbering
+  // each other.
+  for (var attempt = 0; attempt < 3; attempt++) {
+    var current = await calendarRequest('GET', path, token.value, null, null);
+    if (current.error) {
+      return noStore(json({ error: current.status === 404 ? 'Unknown event.' : current.error }, current.status));
+    }
+
+    var event = current.body;
+    if (event.status === 'cancelled') {
+      return noStore(json({ error: 'That event was cancelled.' }, 409));
+    }
+    if (!eventIsOpen(event)) {
+      return noStore(json({ error: 'Registration for that event is closed.' }, 409));
+    }
+
+    var attendees = Array.isArray(event.attendees) ? event.attendees : [];
+    var already = attendees.some(function (attendee) {
+      return normalizeEmail(attendee && attendee.email) === email;
+    });
+    if (already) {
+      return noStore(json({ registered: true, alreadyRegistered: true }, 200));
+    }
+    if (attendees.length >= MAX_ATTENDEES) {
+      return noStore(json({ error: 'That event has reached its guest limit.' }, 409));
+    }
+
+    var payload = {
+      attendees: attendees.concat([{ email: email, responseStatus: 'needsAction' }]),
+      // Public sign-up form — don't let registrants see each other's emails.
+      guestsCanSeeOtherGuests: false
+    };
+    var saved = await calendarRequest(
+      'PATCH', path + '?sendUpdates=' + encodeURIComponent(sendUpdates),
+      token.value, payload, current.etag
+    );
+
+    if (saved.status === 412) continue; // someone else registered first — re-read
+    if (saved.error) return noStore(json({ error: saved.error }, saved.status));
+
+    return noStore(json({ registered: true, alreadyRegistered: false }, 200));
+  }
+
+  return noStore(json({ error: 'Could not save your registration. Please try again.' }, 503));
+}
+
+// Only events the Calendar page actually shows can be registered for, so a
+// guessed id can't be used to attach attendees to something older or far out.
+function eventIsOpen(event) {
+  var now = Date.now();
+  var end = event.end || {};
+  var start = event.start || {};
+
+  // All-day `date` values are exclusive on the end side.
+  var endsAt = end.dateTime ? Date.parse(end.dateTime) :
+    end.date ? Date.parse(end.date + 'T23:59:59Z') : NaN;
+  var startsAt = start.dateTime ? Date.parse(start.dateTime) :
+    start.date ? Date.parse(start.date + 'T00:00:00Z') : NaN;
+
+  if (Number.isNaN(endsAt) || Number.isNaN(startsAt)) return false;
+  if (endsAt < now) return false;
+  return startsAt <= now + MAX_RANGE_DAYS * 86400000;
+}
+
+function normalizeEmail(value) {
+  if (typeof value !== 'string') return '';
+  var email = value.trim().toLowerCase();
+  if (email.length > 254) return '';
+  return /^[^\s@,;:<>"]+@[^\s@.,;:<>"]+(\.[^\s@.,;:<>"]+)+$/.test(email) ? email : '';
+}
+
+// Per-isolate, so it's a speed bump rather than a guarantee — Cloudflare
+// spreads traffic across isolates. Pair it with a WAF rate-limit rule on
+// /api/register if the endpoint ever gets abused in earnest.
+var rateBuckets = new Map();
+
+function rateLimited(ip) {
+  var now = Date.now();
+
+  if (rateBuckets.size > 5000) {
+    rateBuckets.forEach(function (hits, key) {
+      if (!hits.some(function (t) { return now - t < RATE_WINDOW_MS; })) rateBuckets.delete(key);
+    });
+  }
+
+  var recent = (rateBuckets.get(ip) || []).filter(function (t) {
+    return now - t < RATE_WINDOW_MS;
+  });
+  if (recent.length >= RATE_MAX_HITS) {
+    rateBuckets.set(ip, recent);
+    return true;
+  }
+
+  recent.push(now);
+  rateBuckets.set(ip, recent);
+  return false;
+}
+
+async function calendarRequest(method, url, accessToken, body, etag) {
+  var init = {
+    method: method,
+    headers: { Authorization: 'Bearer ' + accessToken }
+  };
+  if (body) {
+    init.headers['Content-Type'] = 'application/json';
+    init.body = JSON.stringify(body);
+  }
+  if (etag) init.headers['If-Match'] = etag;
+
+  var response;
+  try {
+    response = await fetch(url, init);
+  } catch (err) {
+    return { error: 'Calendar request failed.', status: 502 };
+  }
+
+  if (!response.ok) {
+    // Google's body can echo the request; log it, don't return it.
+    var detail = await response.text().catch(function () { return ''; });
+    console.warn('Calendar ' + method + ' failed: ' + response.status + ' ' + detail.slice(0, 500));
+
+    if (response.status === 412) return { status: 412 };
+    if (response.status === 404) return { error: 'Unknown event.', status: 404 };
+    if (response.status === 401 || response.status === 403) {
+      return { error: 'The calendar account cannot edit this event.', status: 502 };
+    }
+    return { error: 'Calendar returned ' + response.status + '.', status: 502 };
+  }
+
+  try {
+    return { body: await response.json(), etag: response.headers.get('ETag') };
+  } catch (err) {
+    return { error: 'Calendar returned an unreadable response.', status: 502 };
+  }
+}
+
+/* ---------- calendar-owner auth ----------
+
+   Writes happen as the calendar's owner, not as a service account. Google
+   refuses `attendees` edits from a service account unless the project has
+   Domain-Wide Delegation, and DWD is a Workspace-only feature — it can't be
+   turned on for a personal gmail.com calendar. So the owner grants consent
+   once (scripts/google-oauth.mjs), and the Worker trades the resulting
+   refresh token for an access token as needed.
+   ----------------------------------------- */
+
+var GOOGLE_TOKEN_URI = 'https://oauth2.googleapis.com/token';
+var cachedToken = null;
+
+function readOauthConfig(env) {
+  if (!env.GOOGLE_OAUTH_CLIENT_ID ||
+      !env.GOOGLE_OAUTH_CLIENT_SECRET ||
+      !env.GOOGLE_OAUTH_REFRESH_TOKEN) {
+    return null;
+  }
+  return {
+    clientId: env.GOOGLE_OAUTH_CLIENT_ID,
+    clientSecret: env.GOOGLE_OAUTH_CLIENT_SECRET,
+    refreshToken: env.GOOGLE_OAUTH_REFRESH_TOKEN
+  };
+}
+
+// Access tokens last an hour; reuse them for the life of the isolate.
+async function getAccessToken(oauth) {
+  var now = Date.now();
+  if (cachedToken &&
+      cachedToken.refreshToken === oauth.refreshToken &&
+      cachedToken.expiresAt > now + 60000) {
+    return { value: cachedToken.value };
+  }
+
+  var response;
+  try {
+    response = await fetch(GOOGLE_TOKEN_URI, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        client_id: oauth.clientId,
+        client_secret: oauth.clientSecret,
+        refresh_token: oauth.refreshToken
+      }).toString()
+    });
+  } catch (err) {
+    return { error: 'Could not reach Google.', status: 502 };
+  }
+
+  if (!response.ok) {
+    // `invalid_grant` here means the refresh token was revoked or expired —
+    // re-run scripts/google-oauth.mjs and set the secret again.
+    var detail = await response.text().catch(function () { return ''; });
+    console.warn('Token refresh failed: ' + response.status + ' ' + detail.slice(0, 500));
+    return { error: 'Could not authorize with Google Calendar.', status: 502 };
+  }
+
+  var payload = await response.json().catch(function () { return null; });
+  if (!payload || !payload.access_token) {
+    return { error: 'Could not authorize with Google Calendar.', status: 502 };
+  }
+
+  cachedToken = {
+    refreshToken: oauth.refreshToken,
+    value: payload.access_token,
+    expiresAt: now + (payload.expires_in || 3600) * 1000
+  };
+  return { value: payload.access_token };
+}
+
 /* ---------- helpers ---------- */
 
 // Only forward the fields the calendar page renders. Google returns
 // attendees, organizer emails, and conferencing links we don't want public.
 function trimEvent(event) {
   var trimmed = {
+    // The page sends this back to /api/register. Not a secret — it's the
+    // same id already encoded in htmlLink's `eid` parameter.
+    id: event.id || '',
     summary: event.summary || '',
     location: event.location || '',
     description: event.description || '',
@@ -213,6 +503,13 @@ function json(body, status, extraHeaders) {
   };
   Object.assign(headers, extraHeaders || {});
   return new Response(JSON.stringify(body), { status: status, headers: headers });
+}
+
+// json() marks 200s cacheable, which is right for the two read endpoints and
+// wrong for every registration response.
+function noStore(response) {
+  response.headers.set('Cache-Control', 'no-store');
+  return response;
 }
 
 function notFound() {

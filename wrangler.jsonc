@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "gasp-machine",
+  "name": "magicshow",
   "main": "src/worker/index.js",
   "compatibility_date": "2026-08-07",
   // Static site in ./src/client, plus an /api/* relay so the Google API
@@ -18,6 +18,9 @@
     "YOUTUBE_MAX_RESULTS": "50",
     // Sent as the Referer on Google calls so referrer-restricted keys still
     // work now that requests come from the Worker instead of the browser.
-    "API_REFERRER": "https://magician.chen-henry.org/"
+    "API_REFERRER": "https://magician.chen-henry.org/",
+    // Whether Google emails the guest when /api/register adds them:
+    // "all" sends the invitation, "none" adds them silently.
+    "CALENDAR_SEND_UPDATES": "all"
   }
 }

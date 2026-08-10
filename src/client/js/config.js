@@ -11,7 +11,8 @@
 window.CONFIG = {
   api: {
     calendar: '/api/calendar',
-    archives: '/api/archives'
+    archives: '/api/archives',
+    register: '/api/register'
   },
 
   // ---- Optional per-video overrides ----

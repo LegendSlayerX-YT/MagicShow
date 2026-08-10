@@ -567,6 +567,74 @@ footer {
   border-bottom-color: var(--crimson-bright);
 }
 
+/* ---- Register for an event ---- */
+.calendar-register {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(245, 233, 224, 0.12);
+}
+
+/* .btn and the form below both set `display`, which outranks the `hidden`
+   attribute's UA rule. Put it back. */
+.calendar-register [hidden] {
+  display: none;
+}
+
+.calendar-register .btn {
+  padding: 9px 20px;
+  font-size: 0.74rem;
+}
+
+.calendar-register__form {
+  display: grid;
+  gap: 12px;
+  max-width: 420px;
+}
+
+.calendar-register__field span {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 0.82rem;
+  letter-spacing: 0.8px;
+  color: var(--cream-dim);
+}
+
+.calendar-register__field .contact__input {
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-size: 0.95rem;
+}
+
+.calendar-register__actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* .btn sets no background, which is fine on the <a> elements it's used on
+   elsewhere — on a <button> it would fall through to the UA's grey face. */
+.calendar-register__cancel {
+  background: transparent;
+}
+
+.calendar-register__actions .btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.calendar-register__status {
+  margin-top: 10px;
+  font-size: 0.9rem;
+  color: var(--cream-dim);
+}
+
+.calendar-register__status:empty {
+  display: none;
+}
+
+.calendar-register__status--success { color: #8fe0a4; }
+.calendar-register__status--error { color: #ffb3b7; }
+
 /* ===========================================================
    ARCHIVES — zigzag video grid
    =========================================================== */
