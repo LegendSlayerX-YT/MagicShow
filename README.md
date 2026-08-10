@@ -65,6 +65,7 @@ Non-secret settings live in `wrangler.jsonc` under `vars`:
 | `YOUTUBE_MAX_RESULTS` | Playlist items to request (1–50) |
 | `API_REFERRER` | Sent as the `Referer` on Google calls — see below |
 | `CALENDAR_SEND_UPDATES` | `all` emails the guest their invitation; `none` adds them silently |
+| `GOOGLE_SIGNIN_CLIENT_ID` | OAuth Client ID for Sign in with Google — see [below](#sign-in-with-google) |
 
 Calendar reads authenticate as the calendar's owner over OAuth — see
 "Event registration" below for how that credential is set up; it backs both
@@ -92,11 +93,15 @@ anything. The cleaner setup is to switch the key's application restriction to
 
 ## Event registration
 
-Each upcoming event on the Calendar page has a **Register** button. The visitor
-types an email, the page POSTs it to `/api/register`, and the Worker adds that
-address to the event's Google Calendar guest list. With
+Each upcoming event on the Calendar page has a **Register** button. Visitors
+sign in with the **Sign in with Google** control in the top-right of the nav;
+clicking Register then POSTs their Google ID token (not a typed-in email) to
+`/api/register`, and the Worker verifies it with Google before adding that
+verified address to the event's Google Calendar guest list. With
 `CALENDAR_SEND_UPDATES: "all"` Google emails them the invitation, so they can
-RSVP and get the event on their own calendar.
+RSVP and get the event on their own calendar. Clicking Register while signed
+out just prompts them to sign in — there's no manual-email fallback, by
+design (see [`GOOGLE_SIGNIN_CLIENT_ID` setup](#sign-in-with-google) below).
 
 `/api/calendar` reads authenticate with this same OAuth credential rather
 than a separate API key — one Google credential to manage instead of two.
@@ -138,6 +143,35 @@ refresh token.
 The scope requested is `calendar.events` — enough to edit events, not enough to
 touch calendar settings or any other Google data.
 
+### Sign in with Google
+
+This is a **separate** OAuth Client ID from the one above — that one is the
+calendar owner's consent for writing to the calendar; this one just lets a
+visitor prove which Google account they're clicking Register with. It uses
+[Google Identity Services](https://developers.google.com/identity/gsi/web)
+(`src/client/js/auth.js`), which hands the browser a signed ID token; the
+Worker re-verifies that token with Google (`verifyGoogleIdToken` in
+`src/worker/index.js`) before trusting the email — a visitor can't just edit
+the page to submit an arbitrary address.
+
+1. In the [Google Cloud console](https://console.cloud.google.com/apis/credentials),
+   reuse the same OAuth Client ID from the section above, or create a new
+   **Web application** Client ID — either works, since Client IDs aren't
+   secret and can serve more than one purpose. Add your site's origin under
+   **Authorized JavaScript origins**:
+   ```
+   https://magician.chen-henry.org
+   ```
+   (and `http://localhost:8788` or whichever port `wrangler dev` prints, for
+   local testing).
+2. Set the Client ID in **two** places — they must match, since the Worker
+   checks it as the token's `aud`:
+   - `GOOGLE_SIGNIN_CLIENT_ID` in `wrangler.jsonc` (`vars`, not a secret).
+   - `googleSignInClientId` in `src/client/js/config.js`.
+3. Deploy. Until both are set, `/api/calendar` reports `registrationOpen:
+   false` and the Register button doesn't render at all — same "don't show a
+   button that can only fail" logic as the rest of the site.
+
 ### Guarding the endpoint
 
 `/api/register` is unauthenticated by necessity, so the Worker limits what it
@@ -150,6 +184,9 @@ can be used for:
 - 200 guests per event, and a repeat email is a no-op rather than a duplicate.
 - Requests must be `application/json` and same-origin, which blocks a
   cross-site `<form>` POST.
+- The email comes from a Google ID token the Worker verifies server-side, not
+  a client-supplied string, so a visitor can't register an address they don't
+  control.
 - Guest lists are never returned to the browser — `/api/calendar` still strips
   `attendees` from every event.
 

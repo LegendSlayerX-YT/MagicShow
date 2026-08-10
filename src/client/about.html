@@ -9,24 +9,28 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Audiowide&family=Poppins:wght@300;400;500;600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="css/styles.css" />
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
   <!-- ===== NAV ===== -->
   <nav class="nav">
     <div class="nav__inner">
       <a href="index.html" class="nav__logo">Gasp Machine</a>
-      <button class="nav__toggle" aria-label="Toggle menu">☰</button>
-      <ul class="nav__links">
-        <li><a href="index.html">Home</a></li>
-        <li><a href="about.html" class="active">About Us</a></li>
-        <li><a href="calendar.html">Calendar</a></li>
-        <li class="nav__dropdown">
-          <a href="archives.html">Archives</a>
-          <ul class="nav__menu">
-            <li><a href="archives.html">Previous Shows</a></li>
-          </ul>
-        </li>
-      </ul>
+      <div class="nav__right">
+        <ul class="nav__links">
+          <li><a href="index.html">Home</a></li>
+          <li><a href="about.html" class="active">About Us</a></li>
+          <li><a href="calendar.html">Calendar</a></li>
+          <li class="nav__dropdown">
+            <a href="archives.html">Archives</a>
+            <ul class="nav__menu">
+              <li><a href="archives.html">Previous Shows</a></li>
+            </ul>
+          </li>
+        </ul>
+        <div class="nav__auth" id="google-signin"></div>
+        <button class="nav__toggle" aria-label="Toggle menu">☰</button>
+      </div>
     </div>
   </nav>
 
@@ -61,5 +65,7 @@
   </footer>
 
   <script src="js/main.js"></script>
+  <script src="js/config.js"></script>
+  <script src="js/auth.js"></script>
 </body>
 </html>

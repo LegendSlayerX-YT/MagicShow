@@ -15,6 +15,13 @@ window.CONFIG = {
     register: '/api/register'
   },
 
+  // OAuth 2.0 Client ID for "Sign in with Google". Client IDs aren't secret
+  // (this is meant to be public — it ends up in the page source either way),
+  // but it must match the GOOGLE_SIGNIN_CLIENT_ID var in wrangler.jsonc, or
+  // the Worker will reject every sign-in as a token meant for someone else.
+  // See README "Sign in with Google" for how to create/configure it.
+  googleSignInClientId: '',
+
   // ---- Optional per-video overrides ----
   // Key = YouTube video ID. Use this to show a custom title/caption instead of
   // the raw YouTube title/description (e.g. nice show names + where you performed).

@@ -11,7 +11,6 @@
   var rootCfg = window.CONFIG || {};
   var endpoint = (rootCfg.api && rootCfg.api.calendar) || '/api/calendar';
   var registerEndpoint = (rootCfg.api && rootCfg.api.register) || '/api/register';
-  var EMAIL_STORE_KEY = 'gaspmachine:register-email';
   // Replaced by the relay's time zone once the response lands.
   var timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
   var rangeEl = document.getElementById('calendar-range');
@@ -110,17 +109,6 @@
     return '' +
       '<div class="calendar-register" data-event-id="' + id + '">' +
         '<button type="button" class="btn btn--solid calendar-register__open">Register</button>' +
-        '<form class="calendar-register__form" hidden>' +
-          '<label class="calendar-register__field">' +
-            '<span>Your email</span>' +
-            '<input class="contact__input" type="email" name="email" required ' +
-              'autocomplete="email" placeholder="you@example.com" />' +
-          '</label>' +
-          '<div class="calendar-register__actions">' +
-            '<button type="submit" class="btn btn--solid">Send invite</button>' +
-            '<button type="button" class="btn calendar-register__cancel">Cancel</button>' +
-          '</div>' +
-        '</form>' +
         '<p class="calendar-register__status" role="status"></p>' +
       '</div>';
   }
@@ -177,23 +165,10 @@
 
   /* ---------- registration ---------- */
 
-  // Remembering the address means someone signing up for two shows only
-  // types it once. Private browsing throws on access, hence the try/catch.
-  function readStoredEmail() {
-    try {
-      return window.localStorage.getItem(EMAIL_STORE_KEY) || '';
-    } catch (err) {
-      return '';
-    }
-  }
-
-  function storeEmail(email) {
-    try {
-      window.localStorage.setItem(EMAIL_STORE_KEY, email);
-    } catch (err) {
-      /* nothing to do — the prefill is a convenience, not a requirement */
-    }
-  }
+  // Set when someone clicks Register while signed out, so a sign-in
+  // completed via the nav button can finish the registration they were
+  // actually trying to do, instead of just leaving them signed in.
+  var pendingEventId = null;
 
   function setStatus(card, message, state) {
     var el = card.querySelector('.calendar-register__status');
@@ -202,49 +177,21 @@
       (state ? ' calendar-register__status--' + state : '');
   }
 
-  function toggleForm(card, open) {
-    card.querySelector('.calendar-register__open').hidden = open;
-    card.querySelector('.calendar-register__form').hidden = !open;
-  }
-
-  list.addEventListener('click', function (evt) {
-    var open = evt.target.closest('.calendar-register__open');
-    if (open) {
-      var card = open.closest('.calendar-register');
-      toggleForm(card, true);
-      setStatus(card, '');
-      var input = card.querySelector('input[name="email"]');
-      if (!input.value) input.value = readStoredEmail();
-      input.focus();
+  function submitRegistration(card) {
+    var auth = window.GoogleAuth;
+    if (!auth || !auth.isSignedIn()) {
+      setStatus(card, 'Sign in with Google (top right) to register.', 'error');
       return;
     }
 
-    var cancel = evt.target.closest('.calendar-register__cancel');
-    if (cancel) {
-      var cancelled = cancel.closest('.calendar-register');
-      toggleForm(cancelled, false);
-      setStatus(cancelled, '');
-    }
-  });
-
-  list.addEventListener('submit', function (evt) {
-    var form = evt.target.closest('.calendar-register__form');
-    if (!form) return;
-    evt.preventDefault();
-
-    var card = form.closest('.calendar-register');
-    var submit = form.querySelector('button[type="submit"]');
-    var input = form.querySelector('input[name="email"]');
-    var email = input.value.trim();
-    if (!email) return;
-
-    submit.disabled = true;
+    var button = card.querySelector('.calendar-register__open');
+    button.disabled = true;
     setStatus(card, 'Sending…');
 
     fetch(registerEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ eventId: card.dataset.eventId, email: email })
+      body: JSON.stringify({ eventId: card.dataset.eventId, credential: auth.getCredential() })
     })
       .then(function (response) {
         return response.json()
@@ -254,12 +201,12 @@
       .then(function (result) {
         if (!result.ok) {
           setStatus(card, result.data.error || 'Something went wrong. Please try again.', 'error');
-          submit.disabled = false;
+          button.disabled = false;
           return;
         }
 
-        storeEmail(email);
-        form.hidden = true;
+        var email = auth.getEmail();
+        button.hidden = true;
         setStatus(
           card,
           result.data.alreadyRegistered
@@ -271,8 +218,31 @@
       .catch(function (error) {
         console.warn('Registration failed:', error);
         setStatus(card, 'Could not reach the server. Please try again.', 'error');
-        submit.disabled = false;
+        button.disabled = false;
       });
+  }
+
+  list.addEventListener('click', function (evt) {
+    var open = evt.target.closest('.calendar-register__open');
+    if (!open) return;
+    var card = open.closest('.calendar-register');
+
+    if (window.GoogleAuth && window.GoogleAuth.isSignedIn()) {
+      submitRegistration(card);
+      return;
+    }
+
+    pendingEventId = card.dataset.eventId;
+    setStatus(card, 'Sign in with Google (top right) to register.', 'error');
+  });
+
+  // Finish whatever registration the visitor was trying to do when they
+  // clicked Sign in with Google from an unauthenticated Register click.
+  window.addEventListener('googleauth:signin', function () {
+    if (!pendingEventId) return;
+    var card = list.querySelector('.calendar-register[data-event-id="' + CSS.escape(pendingEventId) + '"]');
+    pendingEventId = null;
+    if (card) submitRegistration(card);
   });
 
   function fetchUrl(start, endExclusive) {

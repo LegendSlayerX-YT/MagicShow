@@ -21,7 +21,14 @@
     "API_REFERRER": "https://magician.chen-henry.org/",
     // Whether Google emails the guest when /api/register adds them:
     // "all" sends the invitation, "none" adds them silently.
-    "CALENDAR_SEND_UPDATES": "all"
+    "CALENDAR_SEND_UPDATES": "all",
+    // OAuth 2.0 Client ID for "Sign in with Google" (top-right of the nav).
+    // Different from GOOGLE_OAUTH_CLIENT_ID below — that one is the calendar
+    // owner's consent for /api/register writes; this one just identifies
+    // visitors. Not a secret (client IDs are public), but the Worker checks
+    // it as the `aud` on every ID token, so it must be set for real. Same
+    // value also goes in src/client/js/config.js — see README.
+    "GOOGLE_SIGNIN_CLIENT_ID": ""
   },
   "observability": {
     "logs": {

@@ -10,7 +10,10 @@
    /api/register is the one write path: it adds a visitor's
    email to an event's guest list. API keys are read-only, so
    that call runs on an OAuth refresh token for the calendar's
-   owner — see "calendar-owner auth" below.
+   owner — see "calendar-owner auth" below. The visitor's email
+   itself comes from Sign in with Google, not a typed-in field —
+   see "visitor sign-in" below — so the Worker knows it's real
+   before it ever touches the calendar.
 
    Everything that isn't /api/* is handed back to the static
    asset handler (src/client).
@@ -22,7 +25,7 @@
    Config:
      vars    — CALENDAR_ID, CALENDAR_TIME_ZONE,
                YOUTUBE_PLAYLIST_ID, YOUTUBE_MAX_RESULTS,
-               CALENDAR_SEND_UPDATES
+               CALENDAR_SEND_UPDATES, GOOGLE_SIGNIN_CLIENT_ID
      secrets — YOUTUBE_API_KEY,
                GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET,
                GOOGLE_OAUTH_REFRESH_TOKEN
@@ -94,8 +97,9 @@ async function handleCalendar(url, env) {
 
   return json({
     timeZone: timeZone,
-    // Reaching here already proved the OAuth credentials work.
-    registrationOpen: true,
+    // Reaching here already proved the calendar-owner OAuth credentials
+    // work; registration also needs the Sign in with Google client id.
+    registrationOpen: !!env.GOOGLE_SIGNIN_CLIENT_ID,
     events: events
   }, 200);
 }
@@ -156,7 +160,7 @@ var RATE_MAX_HITS = 5;
 // spam arbitrary addresses onto arbitrary events.
 async function handleRegister(request, env) {
   var oauth = readOauthConfig(env);
-  if (!oauth || !env.CALENDAR_ID) {
+  if (!oauth || !env.CALENDAR_ID || !env.GOOGLE_SIGNIN_CLIENT_ID) {
     return noStore(json({ error: 'Registration is not configured.' }, 503));
   }
 
@@ -190,10 +194,13 @@ async function handleRegister(request, env) {
     return noStore(json({ error: 'Unknown event.' }, 400));
   }
 
-  var email = normalizeEmail(body.email);
-  if (!email) {
-    return noStore(json({ error: 'Enter a valid email address.' }, 400));
+  var credential = typeof body.credential === 'string' ? body.credential : '';
+  if (!credential) {
+    return noStore(json({ error: 'Sign in with Google to register.' }, 401));
   }
+  var identity = await verifyGoogleIdToken(credential, env.GOOGLE_SIGNIN_CLIENT_ID);
+  if (identity.error) return noStore(json({ error: identity.error }, identity.status));
+  var email = identity.email;
 
   var token = await getAccessToken(oauth);
   if (token.error) return noStore(json({ error: token.error }, token.status));
@@ -426,6 +433,43 @@ async function getAccessToken(oauth) {
     expiresAt: now + (payload.expires_in || 3600) * 1000
   };
   return { value: payload.access_token };
+}
+
+/* ---------- visitor sign-in (Sign in with Google) ----------
+
+   Separate from the calendar-owner auth above: this identifies whoever
+   clicked Register, not the account that owns the calendar. The browser
+   gets an ID token from Google Identity Services (src/client/js/auth.js)
+   and sends it along with the registration; the Worker can't trust an
+   email the client merely claims, so it re-verifies the token with Google
+   before touching the guest list. Uses the tokeninfo endpoint rather than
+   local JWT/JWKS verification — simpler, and this endpoint sees nowhere
+   near the request volume where tokeninfo's soft rate limit would matter.
+   ----------------------------------------------------------------- */
+
+async function verifyGoogleIdToken(credential, expectedAudience) {
+  var url = 'https://oauth2.googleapis.com/tokeninfo?id_token=' + encodeURIComponent(credential);
+  var response;
+  try {
+    response = await fetch(url);
+  } catch (err) {
+    return { error: 'Could not verify your Google sign-in.', status: 502 };
+  }
+  if (!response.ok) {
+    return { error: 'Could not verify your Google sign-in — sign in again.', status: 401 };
+  }
+
+  var claims = await response.json().catch(function () { return null; });
+  if (!claims || claims.aud !== expectedAudience) {
+    return { error: 'Could not verify your Google sign-in.', status: 401 };
+  }
+  if (claims.email_verified !== 'true' && claims.email_verified !== true) {
+    return { error: "Your Google account's email isn't verified.", status: 401 };
+  }
+
+  var email = normalizeEmail(claims.email);
+  if (!email) return { error: 'Could not verify your Google sign-in.', status: 401 };
+  return { email: email };
 }
 
 /* ---------- helpers ---------- */
