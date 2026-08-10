@@ -204,8 +204,19 @@ async function handleRegister(request, env) {
 
   // attendees is a whole-array field, so this is a read-modify-write.
   // If-Match + retry keeps two simultaneous registrations from clobbering
-  // each other.
-  for (var attempt = 0; attempt < 3; attempt++) {
+  // each other — but Google sometimes serves this Worker a *weak* ETag for
+  // reasons outside our control (an internal routing/serving detail on
+  // Google's side, confirmed by testing outside the Worker), and a weak
+  // validator can never satisfy If-Match, so it 412s no matter how fresh the
+  // read was. Rather than get stuck permanently unable to register, the
+  // last attempt drops the condition and writes unconditionally — the
+  // "already registered" check just above still catches the common case
+  // (the same visitor's retry), so this only risks a genuine lost update in
+  // the rare case of two different visitors registering for the same event
+  // within the same request.
+  var MAX_ATTEMPTS = 4;
+  for (var attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    if (attempt > 0) await sleep(attempt * 400);
     var current = await calendarRequest('GET', path, token.value, null, null);
     if (current.error) {
       return noStore(json({ error: current.status === 404 ? 'Unknown event.' : current.error }, current.status));
@@ -235,12 +246,18 @@ async function handleRegister(request, env) {
       // Public sign-up form — don't let registrants see each other's emails.
       guestsCanSeeOtherGuests: false
     };
+    var conditional = attempt < MAX_ATTEMPTS - 1;
     var saved = await calendarRequest(
       'PATCH', path + '?sendUpdates=' + encodeURIComponent(sendUpdates),
-      token.value, payload, current.etag
+      token.value, payload, conditional ? current.etag : null
     );
 
-    if (saved.status === 412) continue; // someone else registered first — re-read
+    if (saved.status === 412) {
+      if (conditional) continue; // someone else registered first — re-read
+      // Shouldn't happen — the unconditional attempt sends no If-Match, so
+      // Google has nothing to precondition-fail on. Fail loudly if it does.
+      return noStore(json({ error: 'Could not save your registration. Please try again.' }, 503));
+    }
     if (saved.error) return noStore(json({ error: saved.error }, saved.status));
 
     return noStore(json({ registered: true, alreadyRegistered: false }, 200));
@@ -466,6 +483,10 @@ function clampInt(value, min, max, fallback) {
   var n = parseInt(value, 10);
   if (Number.isNaN(n)) return fallback;
   return Math.min(max, Math.max(min, n));
+}
+
+function sleep(ms) {
+  return new Promise(function (resolve) { setTimeout(resolve, ms); });
 }
 
 // Never surface the upstream body — it can echo the request URL (and key).
