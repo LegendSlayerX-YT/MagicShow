@@ -1,16 +1,17 @@
 /* ===========================================================
-   Calendar — fetch public Google Calendar events and render
-   a themed rolling list from 3 days ago through 7 days ahead.
+   Calendar — fetch public Google Calendar events through the
+   site's own /api/calendar relay (the Worker holds the API
+   key) and render a themed rolling list from 3 days ago
+   through 7 days ahead.
    =========================================================== */
 (function () {
   var list = document.getElementById('calendar-list');
   if (!list) return;
 
   var rootCfg = window.CONFIG || {};
-  var cfg = rootCfg.calendar || {};
-  var calendarId = cfg.id || 'chenhenrybunny@gmail.com';
-  var apiKey = cfg.apiKey || (rootCfg.youtube && rootCfg.youtube.apiKey) || '';
-  var timeZone = cfg.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  var endpoint = (rootCfg.api && rootCfg.api.calendar) || '/api/calendar';
+  // Replaced by the relay's time zone once the response lands.
+  var timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
   var rangeEl = document.getElementById('calendar-range');
 
   function escapeHtml(s) {
@@ -140,15 +141,10 @@
 
   function fetchUrl(start, endExclusive) {
     var params = new URLSearchParams({
-      key: apiKey,
-      singleEvents: 'true',
-      orderBy: 'startTime',
       timeMin: start.toISOString(),
-      timeMax: endExclusive.toISOString(),
-      timeZone: timeZone
+      timeMax: endExclusive.toISOString()
     });
-    return 'https://www.googleapis.com/calendar/v3/calendars/' +
-      encodeURIComponent(calendarId) + '/events?' + params.toString();
+    return endpoint + '?' + params.toString();
   }
 
   var today = new Date();
@@ -161,29 +157,24 @@
     rangeEl.textContent = 'Showing ' + formatRangeDate(start) + ' through ' + formatRangeDate(endInclusive) + '.';
   }
 
-  if (!apiKey) {
-    status('Add <code>calendar.apiKey</code> in <code>js/config.js</code> to load public events here.');
-    return;
-  }
-
   fetch(fetchUrl(start, endExclusive))
     .then(function (response) {
       if (!response.ok) throw new Error('HTTP ' + response.status);
       return response.json();
     })
     .then(function (data) {
+      // The relay reports the calendar's configured time zone; use it so
+      // event times read the same for every visitor.
+      if (data.timeZone) timeZone = data.timeZone;
+
       var eventsByDay = {};
 
-      (data.items || [])
-        .filter(function (event) {
-          return event.status !== 'cancelled';
-        })
-        .forEach(function (event) {
-          var key = dayKeyForEvent(event);
-          if (!key) return;
-          if (!eventsByDay[key]) eventsByDay[key] = [];
-          eventsByDay[key].push(event);
-        });
+      (data.events || []).forEach(function (event) {
+        var key = dayKeyForEvent(event);
+        if (!key) return;
+        if (!eventsByDay[key]) eventsByDay[key] = [];
+        eventsByDay[key].push(event);
+      });
 
       render(days, eventsByDay);
     })

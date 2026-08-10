@@ -1,9 +1,23 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "gasp-machine",
+  "main": "src/worker/index.js",
   "compatibility_date": "2026-08-07",
-  // Static-only deployment for Cloudflare Workers.
+  // Static site in ./src/client, plus an /api/* relay so the Google API
+  // keys stay server-side. Assets are matched first; anything that isn't
+  // a file falls through to the Worker.
   "assets": {
-    "directory": "./src/client"
+    "directory": "./src/client",
+    "binding": "ASSETS"
+  },
+  // Non-secret settings. The API keys are secrets — see the README.
+  "vars": {
+    "CALENDAR_ID": "chenhenrybunny@gmail.com",
+    "CALENDAR_TIME_ZONE": "America/Los_Angeles",
+    "YOUTUBE_PLAYLIST_ID": "PLKcHew3eLgPd94aYmo-0KwZ8wSR3HJ_RC",
+    "YOUTUBE_MAX_RESULTS": "50",
+    // Sent as the Referer on Google calls so referrer-restricted keys still
+    // work now that requests come from the Worker instead of the browser.
+    "API_REFERRER": "https://magician.chen-henry.org/"
   }
 }

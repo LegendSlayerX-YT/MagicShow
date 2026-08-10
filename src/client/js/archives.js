@@ -1,14 +1,15 @@
 /* ===========================================================
-   Archives — fetch the public YouTube playlist directly
-   from the browser, apply per-video overrides, and render
-   a zigzag of shows. Falls back to CONFIG.fallback when
-   the playlist request is unavailable or returns nothing.
+   Archives — fetch the public YouTube playlist through the
+   site's own /api/archives relay (the Worker holds the API
+   key), apply per-video overrides, and render a zigzag of
+   shows. Falls back to CONFIG.fallback when the request is
+   unavailable or returns nothing.
    Videos load as click-to-play facades so the page stays
    fast no matter how many shows.
    =========================================================== */
 (function () {
   var cfg = window.CONFIG || {};
-  var yt = cfg.youtube || {};
+  var endpoint = (cfg.api && cfg.api.archives) || '/api/archives';
   var container = document.getElementById('shows');
   if (!container) return;
 
@@ -128,58 +129,17 @@
     }));
   }
 
-  function playlistUrl() {
-    if (!yt.apiKey || !yt.playlistId) return '';
-
-    var params = new URLSearchParams({
-      part: 'snippet,contentDetails',
-      maxResults: String(yt.maxResults || 50),
-      playlistId: yt.playlistId,
-      key: yt.apiKey
-    });
-
-    return 'https://www.googleapis.com/youtube/v3/playlistItems?' + params.toString();
-  }
-
-  function normalizeVideos(items) {
-    return (items || [])
-      .filter(function (it) {
-        var sn = it && it.snippet;
-        var title = sn && sn.title;
-        var videoId = sn && sn.resourceId && sn.resourceId.videoId;
-        return videoId && title && title !== 'Private video' && title !== 'Deleted video';
-      })
-      .map(function (it) {
-        var sn = it.snippet;
-        var cd = it.contentDetails || {};
-        return {
-          id: sn.resourceId.videoId,
-          title: sn.title,
-          caption: (sn.description || '').split('\n')[0],
-          publishedAt: cd.videoPublishedAt || sn.publishedAt
-        };
-      })
-      .sort(function (a, b) {
-        return new Date(b.publishedAt) - new Date(a.publishedAt);
-      });
-  }
-
-  // ---- Live fetch from YouTube Data API ----
+  // ---- Live fetch through the API relay ----
+  // The Worker already filters, normalizes, and sorts the playlist.
   function fetchLive() {
-    var url = playlistUrl();
-    if (!url) {
-      useFallback();
-      return;
-    }
-
-    fetch(url)
+    fetch(endpoint)
       .then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
       })
       .then(function (data) {
-        var videos = normalizeVideos(data && data.items);
-        if (!videos || !videos.length) { useFallback(); return; }
+        var videos = (data && data.videos) || [];
+        if (!videos.length) { useFallback(); return; }
         render(videos);
       })
       .catch(function (err) {

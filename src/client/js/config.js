@@ -1,24 +1,17 @@
 /* ===========================================================
    SITE CONFIG  — edit this file to manage the Archives page
    -----------------------------------------------------------
-   This is now a fully static site. The Archives page can fetch
-   your public YouTube playlist directly from the browser using
-   a restricted API key, or fall back to the local list below.
+   No API keys live here. The Calendar and Archives pages call
+   the site's own /api/* endpoints, and the Worker
+   (src/worker/index.js) adds the Google keys server-side.
+
+   Calendar ID, time zone, playlist ID, and result count are
+   configured in wrangler.jsonc under "vars".
    =========================================================== */
 window.CONFIG = {
-  calendar: {
-    id: 'chenhenrybunny@gmail.com',
-    timeZone: 'America/Los_Angeles',
-    // Enable Google Calendar API for this key in Google Cloud. If omitted,
-    // the site falls back to youtube.apiKey below.
-    apiKey: 'AIzaSyBmFqbuO5-Jlqg2gzpT2p4p5sZVESSWOgs'
-  },
-
-  youtube: {
-    // Restrict this key in Google Cloud to your production domain.
-    apiKey: 'AIzaSyDKsMcoMziORDNAQ-5yCbG7BvG_BWMBxgk',
-    playlistId: 'PLKcHew3eLgPd94aYmo-0KwZ8wSR3HJ_RC',
-    maxResults: 50
+  api: {
+    calendar: '/api/calendar',
+    archives: '/api/archives'
   },
 
   // ---- Optional per-video overrides ----
@@ -28,7 +21,7 @@ window.CONFIG = {
   },
 
   // ---- Fallback list ----
-  // Shown when the YouTube request is unavailable or returns no videos.
+  // Shown when the Archives request is unavailable or returns no videos.
   // Keep this updated so the site always works even without live fetches.
   fallback: [
     { id: 'SY8CQuHmOJw', title: 'Polka Dot Handkerchief', caption: 'Volunteer Magic Show on Lunar New Year Celebration' },
