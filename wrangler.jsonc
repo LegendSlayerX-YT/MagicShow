@@ -23,12 +23,13 @@
     // "all" sends the invitation, "none" adds them silently.
     "CALENDAR_SEND_UPDATES": "all",
     // OAuth 2.0 Client ID for "Sign in with Google" (top-right of the nav).
-    // Different from GOOGLE_OAUTH_CLIENT_ID below — that one is the calendar
-    // owner's consent for /api/register writes; this one just identifies
-    // visitors. Not a secret (client IDs are public), but the Worker checks
-    // it as the `aud` on every ID token, so it must be set for real. Same
-    // value also goes in src/client/js/config.js — see README.
-    "GOOGLE_SIGNIN_CLIENT_ID": ""
+    // Reuses the same Client ID as GOOGLE_OAUTH_CLIENT_ID (the secret below)
+    // — one fewer credential to manage. Not a secret itself (client IDs are
+    // public), but the Worker checks it as the `aud` on every ID token. Same
+    // value also goes in src/client/js/config.js — see README. Requires
+    // this site's origin added under "Authorized JavaScript origins" on
+    // that Client ID in Google Cloud Console.
+    "GOOGLE_SIGNIN_CLIENT_ID": "600675471306-546l8m5jl8jlf6dqmmuje7gu6bs8a0ie.apps.googleusercontent.com"
   },
   "observability": {
     "logs": {

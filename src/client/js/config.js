@@ -20,7 +20,7 @@ window.CONFIG = {
   // but it must match the GOOGLE_SIGNIN_CLIENT_ID var in wrangler.jsonc, or
   // the Worker will reject every sign-in as a token meant for someone else.
   // See README "Sign in with Google" for how to create/configure it.
-  googleSignInClientId: '',
+  googleSignInClientId: '600675471306-546l8m5jl8jlf6dqmmuje7gu6bs8a0ie.apps.googleusercontent.com',
 
   // ---- Optional per-video overrides ----
   // Key = YouTube video ID. Use this to show a custom title/caption instead of

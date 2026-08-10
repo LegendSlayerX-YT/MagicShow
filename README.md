@@ -187,8 +187,12 @@ can be used for:
 - The email comes from a Google ID token the Worker verifies server-side, not
   a client-supplied string, so a visitor can't register an address they don't
   control.
-- Guest lists are never returned to the browser — `/api/calendar` still strips
-  `attendees` from every event.
+- Guest lists themselves are never returned to the browser — `/api/calendar`
+  still strips `attendees` from every event. The one deliberate exception: a
+  signed-in visitor gets a `registered: true/false` flag for their *own*
+  status per event (so Register can show "Registered" without a click),
+  computed server-side from the same data and never exposing who else is on
+  the list.
 
 If Google ever rejects the refresh token (`invalid_grant` in `wrangler tail`),
 re-run step 3 and set the secret again.

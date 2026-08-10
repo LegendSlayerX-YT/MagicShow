@@ -106,6 +106,14 @@
 
   function registerMarkup(event) {
     var id = escapeHtml(event.id);
+    // `registered` only ever arrives when the visitor is signed in — see
+    // the Authorization header on the fetch below.
+    if (event.registered) {
+      return '' +
+        '<div class="calendar-register" data-event-id="' + id + '">' +
+          '<p class="calendar-register__badge">Registered</p>' +
+        '</div>';
+    }
     return '' +
       '<div class="calendar-register" data-event-id="' + id + '">' +
         '<button type="button" class="btn btn--solid calendar-register__open">Register</button>' +
@@ -236,14 +244,25 @@
     setStatus(card, 'Sign in with Google (top right) to register.', 'error');
   });
 
-  // Finish whatever registration the visitor was trying to do when they
-  // clicked Sign in with Google from an unauthenticated Register click.
+  // Signing in can mean two different things here: finishing a registration
+  // that was blocked on it (pendingEventId set), or a visitor signing in on
+  // their own — in which case reload so already-registered events pick up
+  // their "Registered" badge. Not both: reloading rebuilds the whole list,
+  // which would orphan the DOM nodes submitRegistration is about to update.
   window.addEventListener('googleauth:signin', function () {
-    if (!pendingEventId) return;
-    var card = list.querySelector('.calendar-register[data-event-id="' + CSS.escape(pendingEventId) + '"]');
-    pendingEventId = null;
-    if (card) submitRegistration(card);
+    if (pendingEventId) {
+      var card = list.querySelector('.calendar-register[data-event-id="' + CSS.escape(pendingEventId) + '"]');
+      pendingEventId = null;
+      if (card) submitRegistration(card);
+      return;
+    }
+    loadCalendar();
   });
+
+  // Signed out — reload without credentials so "Registered" badges revert
+  // to plain Register buttons (being signed out just means we can no longer
+  // show that status, not that the registration went away).
+  window.addEventListener('googleauth:signout', loadCalendar);
 
   function fetchUrl(start, endExclusive) {
     var params = new URLSearchParams({
@@ -263,30 +282,41 @@
     rangeEl.textContent = 'Showing ' + formatRangeDate(start) + ' through ' + formatRangeDate(endInclusive) + '.';
   }
 
-  fetch(fetchUrl(start, endExclusive))
-    .then(function (response) {
-      if (!response.ok) throw new Error('HTTP ' + response.status);
-      return response.json();
-    })
-    .then(function (data) {
-      // The relay reports the calendar's configured time zone; use it so
-      // event times read the same for every visitor.
-      if (data.timeZone) timeZone = data.timeZone;
-      registrationOpen = !!data.registrationOpen;
+  function loadCalendar() {
+    var auth = window.GoogleAuth;
+    var headers = {};
+    // Signed in → the Worker can mark which events this visitor is already
+    // registered for, using attendee data it already fetched from Google
+    // for this same request (see trimEvent in the Worker) — no extra cost.
+    if (auth && auth.isSignedIn()) headers.Authorization = 'Bearer ' + auth.getCredential();
 
-      var eventsByDay = {};
+    fetch(fetchUrl(start, endExclusive), { headers: headers })
+      .then(function (response) {
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        return response.json();
+      })
+      .then(function (data) {
+        // The relay reports the calendar's configured time zone; use it so
+        // event times read the same for every visitor.
+        if (data.timeZone) timeZone = data.timeZone;
+        registrationOpen = !!data.registrationOpen;
 
-      (data.events || []).forEach(function (event) {
-        var key = dayKeyForEvent(event);
-        if (!key) return;
-        if (!eventsByDay[key]) eventsByDay[key] = [];
-        eventsByDay[key].push(event);
+        var eventsByDay = {};
+
+        (data.events || []).forEach(function (event) {
+          var key = dayKeyForEvent(event);
+          if (!key) return;
+          if (!eventsByDay[key]) eventsByDay[key] = [];
+          eventsByDay[key].push(event);
+        });
+
+        render(days, eventsByDay);
+      })
+      .catch(function (error) {
+        console.warn('Calendar fetch failed:', error);
+        status('Unable to load calendar events right now. Make sure the calendar is public and the Google Calendar API is enabled for the configured API key.');
       });
+  }
 
-      render(days, eventsByDay);
-    })
-    .catch(function (error) {
-      console.warn('Calendar fetch failed:', error);
-      status('Unable to load calendar events right now. Make sure the calendar is public and the Google Calendar API is enabled for the configured API key.');
-    });
+  loadCalendar();
 })();

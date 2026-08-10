@@ -53,7 +53,7 @@ export default {
       return json({ error: 'Method not allowed' }, 405, { Allow: allow });
     }
 
-    if (url.pathname === '/api/calendar') return handleCalendar(url, env);
+    if (url.pathname === '/api/calendar') return handleCalendar(request, url, env);
     if (url.pathname === '/api/archives') return handleArchives(env);
     if (url.pathname === '/api/register') return json({ error: 'Method not allowed' }, 405, { Allow: 'POST' });
 
@@ -63,7 +63,7 @@ export default {
 
 /* ---------- routes ---------- */
 
-async function handleCalendar(url, env) {
+async function handleCalendar(request, url, env) {
   var oauth = readOauthConfig(env);
   var calendarId = env.CALENDAR_ID;
   if (!oauth || !calendarId) {
@@ -91,9 +91,20 @@ async function handleCalendar(url, env) {
   var data = await fetchUpstream(upstream, env, token.value);
   if (data.error) return json({ error: data.error }, data.status);
 
+  // If the visitor is signed in, mark which events they're already on the
+  // guest list for — using the attendees already in this same upstream
+  // response, so this costs no extra Calendar API calls. A bad/expired
+  // credential just means no marks, not a failed request.
+  var viewerEmail = null;
+  var authHeader = request.headers.get('Authorization') || '';
+  if (authHeader.indexOf('Bearer ') === 0 && env.GOOGLE_SIGNIN_CLIENT_ID) {
+    var identity = await verifyGoogleIdToken(authHeader.slice(7), env.GOOGLE_SIGNIN_CLIENT_ID);
+    if (!identity.error) viewerEmail = identity.email;
+  }
+
   var events = (data.body.items || [])
     .filter(function (event) { return event && event.status !== 'cancelled'; })
-    .map(trimEvent);
+    .map(function (event) { return trimEvent(event, viewerEmail); });
 
   return json({
     timeZone: timeZone,
@@ -101,7 +112,7 @@ async function handleCalendar(url, env) {
     // work; registration also needs the Sign in with Google client id.
     registrationOpen: !!env.GOOGLE_SIGNIN_CLIENT_ID,
     events: events
-  }, 200);
+  }, 200, viewerEmail ? { 'Cache-Control': 'private, no-store' } : null);
 }
 
 async function handleArchives(env) {
@@ -476,7 +487,7 @@ async function verifyGoogleIdToken(credential, expectedAudience) {
 
 // Only forward the fields the calendar page renders. Google returns
 // attendees, organizer emails, and conferencing links we don't want public.
-function trimEvent(event) {
+function trimEvent(event, viewerEmail) {
   var trimmed = {
     // The page sends this back to /api/register. Not a secret — it's the
     // same id already encoded in htmlLink's `eid` parameter.
@@ -495,6 +506,16 @@ function trimEvent(event) {
   if (event.end) {
     if (event.end.date) trimmed.end.date = event.end.date;
     if (event.end.dateTime) trimmed.end.dateTime = event.end.dateTime;
+  }
+  // Only set when the visitor is signed in — lets the Register button show
+  // "Registered" without a click. Guest lists otherwise never leave the
+  // Worker (see the field list above), so this is deliberately the one
+  // narrow exception, and only for the signed-in visitor's own status.
+  if (viewerEmail) {
+    var attendees = Array.isArray(event.attendees) ? event.attendees : [];
+    trimmed.registered = attendees.some(function (attendee) {
+      return normalizeEmail(attendee && attendee.email) === viewerEmail;
+    });
   }
   return trimmed;
 }
