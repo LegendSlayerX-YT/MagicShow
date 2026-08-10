@@ -15,11 +15,15 @@
    Everything that isn't /api/* is handed back to the static
    asset handler (src/client).
 
+   Calendar reads go over the same OAuth credentials as the register
+   write (see "calendar-owner auth" below) rather than an API key, so
+   there's one Google credential to manage instead of two.
+
    Config:
      vars    — CALENDAR_ID, CALENDAR_TIME_ZONE,
                YOUTUBE_PLAYLIST_ID, YOUTUBE_MAX_RESULTS,
                CALENDAR_SEND_UPDATES
-     secrets — GOOGLE_CALENDAR_API_KEY, YOUTUBE_API_KEY,
+     secrets — YOUTUBE_API_KEY,
                GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET,
                GOOGLE_OAUTH_REFRESH_TOKEN
    =========================================================== */
@@ -57,9 +61,9 @@ export default {
 /* ---------- routes ---------- */
 
 async function handleCalendar(url, env) {
-  var key = env.GOOGLE_CALENDAR_API_KEY || env.YOUTUBE_API_KEY;
+  var oauth = readOauthConfig(env);
   var calendarId = env.CALENDAR_ID;
-  if (!key || !calendarId) {
+  if (!oauth || !calendarId) {
     return json({ error: 'Calendar relay is not configured.' }, 503);
   }
 
@@ -67,8 +71,10 @@ async function handleCalendar(url, env) {
   var range = readRange(url);
   if (range.error) return json({ error: range.error }, 400);
 
+  var token = await getAccessToken(oauth);
+  if (token.error) return json({ error: token.error }, token.status);
+
   var params = new URLSearchParams({
-    key: key,
     singleEvents: 'true',
     orderBy: 'startTime',
     timeMin: range.timeMin,
@@ -79,7 +85,7 @@ async function handleCalendar(url, env) {
   var upstream = 'https://www.googleapis.com/calendar/v3/calendars/' +
     encodeURIComponent(calendarId) + '/events?' + params.toString();
 
-  var data = await fetchUpstream(upstream, env);
+  var data = await fetchUpstream(upstream, env, token.value);
   if (data.error) return json({ error: data.error }, data.status);
 
   var events = (data.body.items || [])
@@ -88,9 +94,8 @@ async function handleCalendar(url, env) {
 
   return json({
     timeZone: timeZone,
-    // Keeps the page from showing a Register button that can only fail,
-    // e.g. between a deploy and the one-time OAuth setup.
-    registrationOpen: !!readOauthConfig(env),
+    // Reaching here already proved the OAuth credentials work.
+    registrationOpen: true,
     events: events
   }, 200);
 }
@@ -464,14 +469,20 @@ function clampInt(value, min, max, fallback) {
 }
 
 // Never surface the upstream body — it can echo the request URL (and key).
-async function fetchUpstream(url, env) {
+// accessToken is only set for the OAuth-backed calendar read; the YouTube
+// call still authenticates with an API key and needs the Referer instead.
+async function fetchUpstream(url, env, accessToken) {
   var init = { cf: { cacheTtl: CACHE_SECONDS, cacheEverything: true } };
 
-  // Keys created for browser use are often locked to an HTTP referrer, and a
-  // Worker subrequest sends none. Set API_REFERRER to that allowed domain and
-  // the existing keys keep working; drop the restriction in Google Cloud and
-  // this var can go away.
-  if (env.API_REFERRER) init.headers = { Referer: env.API_REFERRER };
+  if (accessToken) {
+    init.headers = { Authorization: 'Bearer ' + accessToken };
+  } else if (env.API_REFERRER) {
+    // Keys created for browser use are often locked to an HTTP referrer, and
+    // a Worker subrequest sends none. Set API_REFERRER to that allowed domain
+    // and the existing key keeps working; drop the restriction in Google
+    // Cloud and this var can go away.
+    init.headers = { Referer: env.API_REFERRER };
+  }
 
   var response;
   try {

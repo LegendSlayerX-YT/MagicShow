@@ -1,0 +1,10 @@
+# Copy to .dev.vars for local `wrangler dev`. Never commit .dev.vars.
+# In production these are set with `wrangler secret put <NAME>`.
+YOUTUBE_API_KEY=""
+
+# Backs both /api/calendar (reads) and /api/register (adds guests), acting
+# as the calendar's owner. Generate all three with:
+#   node scripts/google-oauth.mjs <client-id> <client-secret>
+GOOGLE_OAUTH_CLIENT_ID=""
+GOOGLE_OAUTH_CLIENT_SECRET=""
+GOOGLE_OAUTH_REFRESH_TOKEN=""

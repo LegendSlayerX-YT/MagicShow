@@ -66,28 +66,27 @@ Non-secret settings live in `wrangler.jsonc` under `vars`:
 | `API_REFERRER` | Sent as the `Referer` on Google calls — see below |
 | `CALENDAR_SEND_UPDATES` | `all` emails the guest their invitation; `none` adds them silently |
 
-The keys are secrets, set once per environment:
+Calendar reads authenticate as the calendar's owner over OAuth — see
+"Event registration" below for how that credential is set up; it backs both
+`/api/calendar` and `/api/register`. The YouTube key is the one API-key
+secret left:
 
 ```bash
-wrangler secret put GOOGLE_CALENDAR_API_KEY
 wrangler secret put YOUTUBE_API_KEY
 ```
 
-If `GOOGLE_CALENDAR_API_KEY` isn't set, the Worker falls back to
-`YOUTUBE_API_KEY` for calendar requests, matching the old `config.js` behavior.
-
 ### About `API_REFERRER`
 
-These keys were created as browser keys, restricted in Google Cloud to the
-referrer `https://magician.chen-henry.org/*`. A Worker sends no referrer, so
-Google rejects the call with `API_KEY_HTTP_REFERRER_BLOCKED`. `API_REFERRER`
-makes the Worker send that domain as the `Referer` so the existing keys keep
-working.
+The YouTube key was created as a browser key, restricted in Google Cloud to
+the referrer `https://magician.chen-henry.org/*`. A Worker sends no referrer,
+so Google rejects the call with `API_KEY_HTTP_REFERRER_BLOCKED`.
+`API_REFERRER` makes the Worker send that domain as the `Referer` so the
+existing key keeps working.
 
-Now that the keys are server-side, referrer restriction no longer protects
-anything. The cleaner setup is to switch each key's application restriction to
-**None**, keep the **API restriction** (YouTube Data API v3 / Google Calendar
-API), and delete `API_REFERRER` from `wrangler.jsonc`.
+Now that the key is server-side, referrer restriction no longer protects
+anything. The cleaner setup is to switch the key's application restriction to
+**None**, keep the **API restriction** (YouTube Data API v3), and delete
+`API_REFERRER` from `wrangler.jsonc`.
 
 ---
 
@@ -98,6 +97,9 @@ types an email, the page POSTs it to `/api/register`, and the Worker adds that
 address to the event's Google Calendar guest list. With
 `CALENDAR_SEND_UPDATES: "all"` Google emails them the invitation, so they can
 RSVP and get the event on their own calendar.
+
+`/api/calendar` reads authenticate with this same OAuth credential rather
+than a separate API key — one Google credential to manage instead of two.
 
 ### Why this needs OAuth and not an API key
 
@@ -218,9 +220,8 @@ plus the `/api/*` relay.
 2. Log in: `wrangler login`
 3. Set the secrets (once per environment):
    ```bash
-   wrangler secret put GOOGLE_CALENDAR_API_KEY
    wrangler secret put YOUTUBE_API_KEY
-   # Registrations — see "Event registration" above
+   # Calendar reads + registrations — see "Event registration" above
    wrangler secret put GOOGLE_OAUTH_CLIENT_ID
    wrangler secret put GOOGLE_OAUTH_CLIENT_SECRET
    wrangler secret put GOOGLE_OAUTH_REFRESH_TOKEN
