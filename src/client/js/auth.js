@@ -89,7 +89,8 @@
   window.GoogleAuth = {
     isSignedIn: function () { return !!state.credential; },
     getCredential: function () { return state.credential; },
-    getEmail: function () { return state.email; }
+    getEmail: function () { return state.email; },
+    getName: function () { return state.name; }
   };
 
   if (!clientId) {

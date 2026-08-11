@@ -119,6 +119,14 @@
           '<p class="calendar-register__badge">Registered</p>' +
         '</div>';
     }
+    // Signed-out visitors can't complete registration at all — show it as
+    // a plain label, not a button that would just error on click.
+    if (!window.GoogleAuth || !window.GoogleAuth.isSignedIn()) {
+      return '' +
+        '<div class="calendar-register" data-event-id="' + id + '">' +
+          '<p class="calendar-register__hint">Google Sign in to Register</p>' +
+        '</div>';
+    }
     return '' +
       '<div class="calendar-register" data-event-id="' + id + '">' +
         '<button type="button" class="btn btn--solid calendar-register__open">Register</button>' +
@@ -141,7 +149,7 @@
         var description = event.description ?
           '<p class="calendar-event__meta">' + escapeHtml(event.description.split('\n')[0]) + '</p>' : '';
         var attendeesLine = event.attendees && event.attendees.length ?
-          '<p class="calendar-event__meta">Registered: ' + escapeHtml(event.attendees.join(', ')) + '</p>' : '';
+          '<p class="calendar-event__meta calendar-event__attendees">Registered: ' + escapeHtml(event.attendees.join(', ')) + '</p>' : '';
         var summary = event.summary || 'Untitled event';
         var register = registrationOpen && event.id && !hasEnded(event) ?
           registerMarkup(event) : '';
@@ -233,10 +241,24 @@
 
   /* ---------- registration ---------- */
 
-  // Set when someone clicks Register while signed out, so a sign-in
-  // completed via the nav button can finish the registration they were
-  // actually trying to do, instead of just leaving them signed in.
-  var pendingEventId = null;
+  // Reflects a fresh registration into the "Registered: ..." line right
+  // away, so the guest count is right without a reload. Skipped when the
+  // visitor was already on the list — nothing to add.
+  function addAttendee(card, name) {
+    var article = card.closest('.calendar-event');
+    if (!article) return;
+    var meta = article.querySelector('.calendar-event__attendees');
+    if (meta) {
+      meta.textContent = meta.textContent + ', ' + name;
+      return;
+    }
+    var body = article.querySelector('.calendar-event__body');
+    if (!body) return;
+    meta = document.createElement('p');
+    meta.className = 'calendar-event__meta calendar-event__attendees';
+    meta.textContent = 'Registered: ' + name;
+    body.appendChild(meta);
+  }
 
   function setStatus(card, message, state) {
     var el = card.querySelector('.calendar-register__status');
@@ -273,15 +295,15 @@
           return;
         }
 
-        var email = auth.getEmail();
-        button.hidden = true;
-        setStatus(
-          card,
-          result.data.alreadyRegistered
-            ? email + ' is already on the guest list for this event.'
-            : 'You\'re on the guest list — ' + email + ' has been added as a guest.',
-          'success'
-        );
+        setStatus(card, '');
+        button.textContent = 'Registered';
+        button.disabled = true;
+        button.classList.remove('btn', 'btn--solid', 'calendar-register__open');
+        button.classList.add('calendar-register__badge');
+
+        if (!result.data.alreadyRegistered) {
+          addAttendee(card, auth.getName() || auth.getEmail());
+        }
       })
       .catch(function (error) {
         console.warn('Registration failed:', error);
@@ -290,38 +312,18 @@
       });
   }
 
+  // The button only ever renders while signed in (see registerMarkup), so
+  // there's no signed-out case to handle here.
   list.addEventListener('click', function (evt) {
     var open = evt.target.closest('.calendar-register__open');
     if (!open) return;
-    var card = open.closest('.calendar-register');
-
-    if (window.GoogleAuth && window.GoogleAuth.isSignedIn()) {
-      submitRegistration(card);
-      return;
-    }
-
-    pendingEventId = card.dataset.eventId;
-    setStatus(card, 'Sign in with Google (top right) to register.', 'error');
+    submitRegistration(open.closest('.calendar-register'));
   });
 
-  // Signing in can mean two different things here: finishing a registration
-  // that was blocked on it (pendingEventId set), or a visitor signing in on
-  // their own — in which case reload so already-registered events pick up
-  // their "Registered" badge. Not both: reloading rebuilds the whole list,
-  // which would orphan the DOM nodes submitRegistration is about to update.
-  window.addEventListener('googleauth:signin', function () {
-    if (pendingEventId) {
-      var card = list.querySelector('.calendar-register[data-event-id="' + CSS.escape(pendingEventId) + '"]');
-      pendingEventId = null;
-      if (card) submitRegistration(card);
-      return;
-    }
-    loadCalendar();
-  });
-
-  // Signed out — reload without credentials so "Registered" badges revert
-  // to plain Register buttons (being signed out just means we can no longer
-  // show that status, not that the registration went away).
+  // Reload on sign-in/out so the register button/hint/badge for every
+  // event reflects the new auth state, and signed-in visitors pick up
+  // "Registered" badges for events they're already on.
+  window.addEventListener('googleauth:signin', loadCalendar);
   window.addEventListener('googleauth:signout', loadCalendar);
 
   function fetchUrl(start, endExclusive, includeAttendees) {

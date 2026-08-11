@@ -632,6 +632,15 @@ footer {
 .calendar-register__status--success { color: #8fe0a4; }
 .calendar-register__status--error { color: #ffb3b7; }
 
+.calendar-register__hint {
+  font-family: 'Poppins', sans-serif;
+  font-weight: 500;
+  font-size: 0.74rem;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--cream-dim);
+}
+
 .calendar-register__badge {
   display: inline-block;
   padding: 9px 20px;
@@ -643,6 +652,8 @@ footer {
   font-size: 0.74rem;
   letter-spacing: 1.5px;
   text-transform: uppercase;
+  background: none;
+  cursor: default;
 }
 
 /* ---- Recent past events — horizontal scroll row ---- */
