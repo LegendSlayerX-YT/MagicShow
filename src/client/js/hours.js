@@ -127,13 +127,42 @@
       '</li>';
   }
 
-  function volunteerMarkup(data, events) {
-    var totalHours = typeof data.totalHours === 'number' ? data.totalHours : 0;
-    var submissions = Array.isArray(data.submissions) ? data.submissions : [];
-    var rows = submissions.length ?
-      submissions.map(submissionMarkup).join('') :
-      '<li class="hours-item hours-item--empty">No submissions yet.</li>';
+  // Range filtering compares "YYYY-MM-DD" strings directly (lexicographic
+  // order matches date order for this format), so no Date parsing is needed.
+  function filterByDateRange(submissions, start, end) {
+    return submissions.filter(function (item) {
+      if (start && item.date < start) return false;
+      if (end && item.date > end) return false;
+      return true;
+    });
+  }
 
+  function sumVerifiedHours(submissions) {
+    var sum = submissions.reduce(function (total, item) {
+      return item.status === 'verified' ? total + (Number(item.hours) || 0) : total;
+    }, 0);
+    return Math.round(sum * 100) / 100;
+  }
+
+  function renderSubmissionsView(allSubmissions, start, end) {
+    var filtered = filterByDateRange(allSubmissions, start, end);
+    var emptyMessage = allSubmissions.length ? 'No submissions in range.' : 'No submissions yet.';
+    var rows = filtered.length ?
+      filtered.map(submissionMarkup).join('') :
+      '<li class="hours-item hours-item--empty">' + escapeHtml(emptyMessage) + '</li>';
+    document.getElementById('hours-list').innerHTML = rows;
+
+    var rangeEl = document.getElementById('hours-range-total');
+    if (start || end) {
+      rangeEl.hidden = false;
+      rangeEl.innerHTML = 'Verified hours in range: <strong>' + escapeHtml(sumVerifiedHours(filtered)) + '</strong>';
+    } else {
+      rangeEl.hidden = true;
+      rangeEl.innerHTML = '';
+    }
+  }
+
+  function volunteerMarkup(totalHours, events) {
     return '' +
       '<form class="hours-form contact__form" id="hours-form">' +
         '<label class="contact__field"><span>Hours</span>' +
@@ -149,16 +178,45 @@
       '</form>' +
       '<div class="hours-summary">' +
         '<p class="hours-summary__total">Total verified hours: <strong>' + escapeHtml(totalHours) + '</strong></p>' +
-        '<ul class="hours-list">' + rows + '</ul>' +
+        '<p class="hours-summary__range" id="hours-range-total" hidden></p>' +
+        '<div class="hours-filter">' +
+          '<label class="hours-filter__field"><span>From</span>' +
+            '<input class="contact__input" type="date" id="hours-filter-start"></label>' +
+          '<label class="hours-filter__field"><span>To</span>' +
+            '<input class="contact__input" type="date" id="hours-filter-end"></label>' +
+          '<button type="button" class="btn hours-filter__clear" id="hours-filter-clear">Clear</button>' +
+        '</div>' +
+        '<ul class="hours-list" id="hours-list"></ul>' +
       '</div>';
   }
 
   function renderVolunteer(data, events) {
-    panel.innerHTML = volunteerMarkup(data, events);
+    var submissions = Array.isArray(data.submissions) ? data.submissions : [];
+    var totalHours = typeof data.totalHours === 'number' ? data.totalHours : 0;
+    panel.innerHTML = volunteerMarkup(totalHours, events);
+
     document.getElementById('hours-form').addEventListener('submit', function (evt) {
       evt.preventDefault();
       submitHours(evt.target);
     });
+
+    var startInput = document.getElementById('hours-filter-start');
+    var endInput = document.getElementById('hours-filter-end');
+    var clearBtn = document.getElementById('hours-filter-clear');
+
+    function refresh() {
+      renderSubmissionsView(submissions, startInput.value, endInput.value);
+    }
+
+    startInput.addEventListener('change', refresh);
+    endInput.addEventListener('change', refresh);
+    clearBtn.addEventListener('click', function () {
+      startInput.value = '';
+      endInput.value = '';
+      refresh();
+    });
+
+    refresh();
   }
 
   function submitHours(form) {

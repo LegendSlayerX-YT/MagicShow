@@ -841,6 +841,47 @@ footer {
 }
 .hours-summary__total strong { color: var(--crimson-bright); }
 
+.hours-summary__range {
+  font-size: 0.95rem;
+  color: var(--cream);
+  margin-bottom: 18px;
+}
+.hours-summary__range strong { color: var(--crimson-bright); }
+
+.hours-filter {
+  display: flex;
+  align-items: flex-end;
+  gap: 14px 20px;
+  flex-wrap: wrap;
+  margin-bottom: 24px;
+}
+
+.hours-filter__field {
+  display: block;
+}
+.hours-filter__field span {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--cream);
+  font-size: 0.94rem;
+  letter-spacing: 0.8px;
+}
+.hours-filter__field .contact__input {
+  width: auto;
+}
+
+.hours-filter__clear {
+  padding: 13px 20px;
+  font-size: 0.72rem;
+  background: none;
+  border-color: #ffb3b7;
+  color: #ffb3b7;
+}
+.hours-filter__clear:hover {
+  background: #ffb3b7;
+  color: var(--maroon-dark);
+}
+
 .hours-list {
   display: grid;
   gap: 12px;
