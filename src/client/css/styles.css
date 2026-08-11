@@ -645,6 +645,60 @@ footer {
   text-transform: uppercase;
 }
 
+/* ---- Recent past events — horizontal scroll row ---- */
+.calendar-past { padding-bottom: 80px; }
+.calendar-past__title {
+  font-family: 'Audiowide', cursive;
+  font-weight: 400;
+  font-size: clamp(1.3rem, 2.4vw, 1.7rem);
+  letter-spacing: 1px;
+  margin-bottom: 24px;
+}
+.calendar-past__row {
+  display: flex;
+  gap: 20px;
+  overflow-x: auto;
+  padding-bottom: 16px;
+  scroll-snap-type: x mandatory;
+  -webkit-overflow-scrolling: touch;
+}
+.calendar-past__row::-webkit-scrollbar { height: 8px; }
+.calendar-past__row::-webkit-scrollbar-thumb {
+  background: rgba(229, 31, 39, 0.55);
+  border-radius: 4px;
+}
+.calendar-past__row::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.25); }
+
+.calendar-past-card {
+  flex: 0 0 280px;
+  max-width: 280px;
+  scroll-snap-align: start;
+  padding: 18px 20px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(245, 233, 224, 0.12);
+}
+.calendar-past-card__time {
+  color: var(--crimson-bright);
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  font-size: 0.76rem;
+  font-weight: 500;
+  margin-bottom: 8px;
+}
+.calendar-past-card__title {
+  font-family: 'Audiowide', cursive;
+  font-weight: 400;
+  font-size: 1.02rem;
+  line-height: 1.4;
+  margin-bottom: 10px;
+}
+.calendar-past-card__attendees {
+  color: var(--cream-dim);
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
 /* ===========================================================
    ARCHIVES — zigzag video grid
    =========================================================== */

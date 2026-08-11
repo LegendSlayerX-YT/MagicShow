@@ -1,12 +1,17 @@
 /* ===========================================================
    Calendar — fetch public Google Calendar events through the
    site's own /api/calendar relay (the Worker holds the API
-   key) and render a themed rolling list from 3 days ago
-   through 7 days ahead.
+   key). Renders two independent windows:
+     - today through 7 days ahead, as the themed daily list
+     - up to the last 90 days (10 most recent), as a horizontal
+       slider of compact cards
    =========================================================== */
 (function () {
   var list = document.getElementById('calendar-list');
   if (!list) return;
+
+  var pastSection = document.getElementById('calendar-past');
+  var pastRow = document.getElementById('calendar-past-row');
 
   var rootCfg = window.CONFIG || {};
   var endpoint = (rootCfg.api && rootCfg.api.calendar) || '/api/calendar';
@@ -170,6 +175,59 @@
     return days;
   }
 
+  /* ---------- past events (horizontal slider) ---------- */
+
+  var PAST_DAYS = 90;
+  var MAX_PAST_EVENTS = 10;
+
+  function eventStartMs(event) {
+    var start = event.start || {};
+    if (start.dateTime) return Date.parse(start.dateTime);
+    if (start.date) return Date.parse(start.date + 'T00:00:00');
+    return NaN;
+  }
+
+  function eventDateLabel(event) {
+    var ms = eventStartMs(event);
+    if (isNaN(ms)) return '';
+    // Explicit timeZone so the date shown here always agrees with
+    // timeLabel()'s time, regardless of the browser's own zone.
+    return new Intl.DateTimeFormat('en-US', {
+      weekday: 'long',
+      month: 'long',
+      day: 'numeric',
+      timeZone: timeZone
+    }).format(new Date(ms));
+  }
+
+  function attendeesLabel(event) {
+    var names = Array.isArray(event.attendees) ? event.attendees : [];
+    if (!names.length) return 'No attendees yet.';
+    return names.join(', ');
+  }
+
+  function renderPast(events) {
+    if (!pastSection || !pastRow) return;
+
+    if (!events.length) {
+      pastSection.hidden = true;
+      pastRow.innerHTML = '';
+      return;
+    }
+
+    pastSection.hidden = false;
+    pastRow.innerHTML = events.map(function (event) {
+      var summary = event.summary || 'Untitled event';
+      return '' +
+        '<article class="calendar-past-card">' +
+          '<p class="calendar-past-card__time">' + escapeHtml(eventDateLabel(event)) +
+            ' · ' + escapeHtml(timeLabel(event)) + '</p>' +
+          '<h3 class="calendar-past-card__title">' + escapeHtml(summary) + '</h3>' +
+          '<p class="calendar-past-card__attendees">' + escapeHtml(attendeesLabel(event)) + '</p>' +
+        '</article>';
+    }).join('');
+  }
+
   /* ---------- registration ---------- */
 
   // Set when someone clicks Register while signed out, so a sign-in
@@ -263,22 +321,31 @@
   // show that status, not that the registration went away).
   window.addEventListener('googleauth:signout', loadCalendar);
 
-  function fetchUrl(start, endExclusive) {
+  function fetchUrl(start, endExclusive, includeAttendees) {
     var params = new URLSearchParams({
       timeMin: start.toISOString(),
       timeMax: endExclusive.toISOString()
     });
+    if (includeAttendees) params.set('attendees', '1');
     return endpoint + '?' + params.toString();
   }
 
   var today = new Date();
-  var start = startOfDay(addDays(today, -3));
-  var endInclusive = startOfDay(addDays(today, 7));
-  var endExclusive = startOfDay(addDays(today, 8));
-  var days = buildDays(start, endInclusive);
+
+  // Future window: today through 7 days ahead, unchanged from before.
+  var futureStart = startOfDay(today);
+  var futureEndInclusive = startOfDay(addDays(today, 7));
+  var futureEndExclusive = startOfDay(addDays(today, 8));
+  var days = buildDays(futureStart, futureEndInclusive);
+
+  // Past window: everything before today, back up to PAST_DAYS — fetched
+  // separately so it stays under the Worker's per-request range cap and so
+  // attendee names (see fetchUrl above) are only requested/exposed here.
+  var pastStart = startOfDay(addDays(today, -PAST_DAYS));
+  var pastEndExclusive = futureStart;
 
   if (rangeEl) {
-    rangeEl.textContent = 'Showing ' + formatRangeDate(start) + ' through ' + formatRangeDate(endInclusive) + '.';
+    rangeEl.textContent = 'Showing ' + formatRangeDate(futureStart) + ' through ' + formatRangeDate(futureEndInclusive) + '.';
   }
 
   function loadCalendar() {
@@ -289,7 +356,7 @@
     // for this same request (see trimEvent in the Worker) — no extra cost.
     if (auth && auth.isSignedIn()) headers.Authorization = 'Bearer ' + auth.getCredential();
 
-    fetch(fetchUrl(start, endExclusive), { headers: headers })
+    fetch(fetchUrl(futureStart, futureEndExclusive), { headers: headers })
       .then(function (response) {
         if (!response.ok) throw new Error('HTTP ' + response.status);
         return response.json();
@@ -314,6 +381,24 @@
       .catch(function (error) {
         console.warn('Calendar fetch failed:', error);
         status('Unable to load calendar events right now. Make sure the calendar is public and the Google Calendar API is enabled for the configured API key.');
+      });
+
+    fetch(fetchUrl(pastStart, pastEndExclusive, true))
+      .then(function (response) {
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        return response.json();
+      })
+      .then(function (data) {
+        if (data.timeZone) timeZone = data.timeZone;
+        var events = (data.events || [])
+          .slice()
+          .sort(function (a, b) { return eventStartMs(b) - eventStartMs(a); })
+          .slice(0, MAX_PAST_EVENTS);
+        renderPast(events);
+      })
+      .catch(function (error) {
+        console.warn('Past calendar fetch failed:', error);
+        if (pastSection) pastSection.hidden = true;
       });
   }
 

@@ -36,8 +36,7 @@
   <main class="container">
     <h1 class="section-title">Calendar</h1>
     <p class="calendar-intro">
-      Browse recent and upcoming public events from our calendar. This view automatically
-      shows the rolling window from 3 days ago through 7 days ahead.
+      Browse upcoming public events from our calendar, plus recent past events below.
     </p>
 
     <section class="calendar-panel">
@@ -47,6 +46,11 @@
       <div id="calendar-list" class="calendar-list">
         <p class="archive-status">Loading calendar…</p>
       </div>
+    </section>
+
+    <section class="calendar-past" id="calendar-past" hidden>
+      <h2 class="calendar-past__title">Recent Past Events</h2>
+      <div id="calendar-past-row" class="calendar-past__row"></div>
     </section>
   </main>
 

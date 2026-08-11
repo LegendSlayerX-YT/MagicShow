@@ -103,9 +103,15 @@ async function handleCalendar(request, url, env) {
     if (!identity.error) viewerEmail = identity.email;
   }
 
+  // Attendee names are only included when the caller asks for them — the
+  // past-events slider needs them, but the default (future) request should
+  // keep costing nothing extra in exposed data. See trimEvent for why this
+  // is otherwise never sent.
+  var includeAttendees = url.searchParams.get('attendees') === '1';
+
   var events = (data.body.items || [])
     .filter(function (event) { return event && event.status !== 'cancelled'; })
-    .map(function (event) { return trimEvent(event, viewerEmail); });
+    .map(function (event) { return trimEvent(event, viewerEmail, includeAttendees); });
 
   return json({
     timeZone: timeZone,
@@ -499,7 +505,7 @@ async function verifyGoogleIdToken(credential, expectedAudience) {
 
 // Only forward the fields the calendar page renders. Google returns
 // attendees, organizer emails, and conferencing links we don't want public.
-function trimEvent(event, viewerEmail) {
+function trimEvent(event, viewerEmail, includeAttendees) {
   var trimmed = {
     // The page sends this back to /api/register. Not a secret — Google
     // event ids aren't guessable-but-sensitive, just opaque identifiers.
@@ -527,6 +533,17 @@ function trimEvent(event, viewerEmail) {
     trimmed.registered = attendees.some(function (attendee) {
       return normalizeEmail(attendee && attendee.email) === viewerEmail;
     });
+  }
+  // The past-events slider shows who's coming, but never email addresses —
+  // only whatever display name a guest set on their own RSVP. Declined and
+  // resource (room/equipment) entries aren't people who are "attending".
+  if (includeAttendees) {
+    var guests = Array.isArray(event.attendees) ? event.attendees : [];
+    trimmed.attendees = guests
+      .filter(function (attendee) {
+        return attendee && !attendee.resource && attendee.responseStatus !== 'declined';
+      })
+      .map(function (attendee) { return attendee.displayName || 'Guest'; });
   }
   return trimmed;
 }
