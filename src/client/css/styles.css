@@ -897,6 +897,21 @@ footer {
   font-size: 0.72rem;
 }
 
+/* Plain <button class="btn"> (no --solid) picks up the browser's own
+   default button background instead of staying transparent like the <a
+   class="btn"> elsewhere on the site — paired with .btn's near-white
+   `color`, that made Deny invisible until :hover flipped the colors. Set
+   both explicitly instead of relying on the shared .btn's transparency. */
+.hours-item__deny {
+  background: none;
+  border-color: #ffb3b7;
+  color: #ffb3b7;
+}
+.hours-item__deny:hover {
+  background: #ffb3b7;
+  color: var(--maroon-dark);
+}
+
 .hours-item__status {
   font-size: 0.85rem;
   color: var(--cream-faint);
