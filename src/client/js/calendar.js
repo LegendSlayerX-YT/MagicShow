@@ -138,41 +138,71 @@
       '</div>';
   }
 
-  // Organizer-only: pick leaders from this event's registered guests. Only
+  // Organizer-only: a person pill an organizer can drag between the Leads
+  // and Volunteers zones. `data-original` records which zone this pill
+  // started in (the last-saved state), so isDirty() can tell a staged move
+  // apart from the persisted pick without a separate state object.
+  function pillMarkup(attendee, zone) {
+    return '' +
+      '<span class="calendar-pill" draggable="true" data-email="' + escapeHtml(attendee.email) + '" data-original="' + zone + '">' +
+        escapeHtml(attendee.name) +
+      '</span>';
+  }
+
+  // Organizer-only: this event's registered guests as draggable pills, split
+  // into the Leads/Volunteers zones the organizer can drag between. Only
   // rendered when the Worker's verified isOrganizer flag says so — see
   // loadCalendar. attendeeDetails/leaders only ever arrive on that response.
-  function leaderMarkup(event) {
-    var id = escapeHtml(event.id);
+  function leaderBoardMarkup(event) {
     var attendees = Array.isArray(event.attendeeDetails) ? event.attendeeDetails : [];
     if (!attendees.length) {
-      return '' +
-        '<div class="calendar-leaders" data-event-id="' + id + '">' +
-          '<p class="calendar-leaders__hint">No registered guests yet.</p>' +
-        '</div>';
+      return '<p class="calendar-leaders__hint">No registered guests yet.</p>';
     }
 
     var currentLeaders = Array.isArray(event.leaders) ? event.leaders : [];
-    var options = attendees.map(function (attendee) {
-      var email = escapeHtml(attendee.email);
-      var checked = currentLeaders.indexOf(attendee.email) !== -1 ? ' checked' : '';
-      return '' +
-        '<label class="calendar-leaders__option">' +
-          '<input type="checkbox" value="' + email + '"' + checked + '>' +
-          escapeHtml(attendee.name) +
-        '</label>';
-    }).join('');
+    var leaderSet = {};
+    currentLeaders.forEach(function (email) { leaderSet[email] = true; });
+
+    var leadPills = '';
+    var volunteerPills = '';
+    attendees.forEach(function (attendee) {
+      if (leaderSet[attendee.email]) {
+        leadPills += pillMarkup(attendee, 'leads');
+      } else {
+        volunteerPills += pillMarkup(attendee, 'volunteers');
+      }
+    });
 
     return '' +
+      '<div class="calendar-leaders__board">' +
+        '<div class="calendar-leaders__row">' +
+          '<span class="calendar-leaders__row-label">Leads:</span>' +
+          '<div class="calendar-leaders__pills" data-role="leads">' + leadPills + '</div>' +
+        '</div>' +
+        '<div class="calendar-leaders__row">' +
+          '<span class="calendar-leaders__row-label">Volunteers:</span>' +
+          '<div class="calendar-leaders__pills" data-role="volunteers">' + volunteerPills + '</div>' +
+        '</div>' +
+      '</div>';
+  }
+
+  // Organizer-only: the Save control that appears on the right once a drag
+  // has staged a change (see refreshLeaderState/isDirty). Kept separate from
+  // the pill board so it can sit in the article's right-hand column while
+  // the board sits in the body on the left.
+  function leaderSaveMarkup(event) {
+    var attendees = Array.isArray(event.attendeeDetails) ? event.attendeeDetails : [];
+    if (!attendees.length) return '';
+    var id = escapeHtml(event.id);
+    return '' +
       '<div class="calendar-leaders" data-event-id="' + id + '">' +
-        '<p class="calendar-leaders__title">Leaders</p>' +
-        options +
-        '<button type="button" class="btn btn--solid calendar-leaders__save">Save leaders</button>' +
+        '<button type="button" class="btn btn--solid calendar-leaders__save" hidden>Save</button>' +
         '<p class="calendar-leaders__status" role="status"></p>' +
       '</div>';
   }
 
   // Shared by the daily list and the past-events slider. `leads` are the
-  // guests an organizer picked (see leaderMarkup); everyone else who
+  // guests an organizer picked (see leaderBoardMarkup); everyone else who
   // registered shows up as a volunteer. Emails never reach this file — the
   // Worker already split guests into these two name-only lists server-side.
   function attendeesMarkup(event) {
@@ -204,14 +234,17 @@
           '<p class="calendar-event__meta">' + escapeHtml(event.location) + '</p>' : '';
         var description = event.description ?
           '<p class="calendar-event__meta">' + escapeHtml(event.description.split('\n')[0]) + '</p>' : '';
-        var attendeesLine = attendeesMarkup(event);
+        // Organizers get the draggable Leads/Volunteers board in place of
+        // the plain-text attendee line; everyone else keeps the read-only
+        // summary (see attendeesMarkup).
+        var attendeesLine = isOrganizer && event.id ? leaderBoardMarkup(event) : attendeesMarkup(event);
         var summary = event.summary || 'Untitled event';
         // Organizers manage leaders instead of registering themselves — see
-        // leaderMarkup — so the Register button/hint/badge never renders
+        // leaderBoardMarkup — so the Register button/hint/badge never renders
         // for them, even while registration is open for everyone else.
         var register = registrationOpen && !isOrganizer && event.id && !hasEnded(event) ?
           registerMarkup(event) : '';
-        var leaders = isOrganizer && event.id ? leaderMarkup(event) : '';
+        var leaders = isOrganizer && event.id ? leaderSaveMarkup(event) : '';
 
         return '' +
           '<article class="calendar-event">' +
@@ -387,6 +420,23 @@
   // The button only ever renders while signed in (see registerMarkup), so
   // there's no signed-out case to handle here.
   list.addEventListener('click', function (evt) {
+    // Tap-to-move: a plain click (no drag) swaps a pill to the other zone.
+    // Kept alongside native drag/drop so the board still works on touch
+    // devices, which don't fire HTML5 drag events.
+    var pill = evt.target.closest('.calendar-pill');
+    if (pill) {
+      var currentZone = pill.closest('.calendar-leaders__pills');
+      var board = pill.closest('.calendar-leaders__board');
+      if (currentZone && board) {
+        var otherRole = currentZone.dataset.role === 'leads' ? 'volunteers' : 'leads';
+        var otherZone = board.querySelector('.calendar-leaders__pills[data-role="' + otherRole + '"]');
+        if (otherZone) {
+          otherZone.appendChild(pill);
+          refreshLeaderState(pill.closest('.calendar-event'));
+        }
+      }
+      return;
+    }
     var save = evt.target.closest('.calendar-leaders__save');
     if (save) {
       submitLeaders(save.closest('.calendar-leaders'));
@@ -397,12 +447,79 @@
     submitRegistration(open.closest('.calendar-register'));
   });
 
+  /* ---------- leader pill drag/drop ---------- */
+
+  var draggedPill = null;
+
+  list.addEventListener('dragstart', function (evt) {
+    var pill = evt.target.closest('.calendar-pill');
+    if (!pill) return;
+    draggedPill = pill;
+    pill.classList.add('calendar-pill--dragging');
+    evt.dataTransfer.effectAllowed = 'move';
+    evt.dataTransfer.setData('text/plain', pill.dataset.email || '');
+  });
+
+  list.addEventListener('dragend', function () {
+    if (draggedPill) draggedPill.classList.remove('calendar-pill--dragging');
+    draggedPill = null;
+  });
+
+  list.addEventListener('dragover', function (evt) {
+    var zone = evt.target.closest('.calendar-leaders__pills');
+    if (!zone || !draggedPill) return;
+    evt.preventDefault();
+    zone.classList.add('calendar-leaders__pills--over');
+  });
+
+  list.addEventListener('dragleave', function (evt) {
+    var zone = evt.target.closest('.calendar-leaders__pills');
+    if (zone) zone.classList.remove('calendar-leaders__pills--over');
+  });
+
+  list.addEventListener('drop', function (evt) {
+    var zone = evt.target.closest('.calendar-leaders__pills');
+    if (!zone || !draggedPill) return;
+    evt.preventDefault();
+    zone.classList.remove('calendar-leaders__pills--over');
+    zone.appendChild(draggedPill);
+    refreshLeaderState(zone.closest('.calendar-event'));
+  });
+
+  // A pill is "dirty" once its current zone no longer matches the zone it
+  // started in (data-original, set at render time / reset on save) — that
+  // in-DOM comparison is the staged-in-memory leader list, with no separate
+  // state object to keep in sync.
+  function isDirty(article) {
+    var pills = article.querySelectorAll('.calendar-pill');
+    for (var i = 0; i < pills.length; i++) {
+      var pill = pills[i];
+      var zone = pill.closest('.calendar-leaders__pills');
+      if (!zone || zone.dataset.role !== pill.dataset.original) return true;
+    }
+    return false;
+  }
+
+  // Shows/hides the right-hand Save button to match whether the board has
+  // any staged (unsaved) moves.
+  function refreshLeaderState(article) {
+    if (!article) return;
+    var wrap = article.querySelector('.calendar-leaders');
+    if (!wrap) return;
+    var button = wrap.querySelector('.calendar-leaders__save');
+    var statusEl = wrap.querySelector('.calendar-leaders__status');
+    var dirty = isDirty(article);
+    button.hidden = !dirty;
+    if (!dirty && statusEl) statusEl.textContent = '';
+  }
+
   // The Save button only ever renders while signed in as an organizer (see
-  // leaderMarkup), so there's no signed-out case to handle here either.
+  // leaderSaveMarkup), so there's no signed-out case to handle here either.
   function submitLeaders(card) {
     var auth = window.GoogleAuth;
     var statusEl = card.querySelector('.calendar-leaders__status');
     var button = card.querySelector('.calendar-leaders__save');
+    var article = card.closest('.calendar-event');
 
     if (!auth || !auth.isSignedIn()) {
       statusEl.textContent = 'Sign in with Google (top right) to save.';
@@ -410,9 +527,10 @@
       return;
     }
 
+    var leadsZone = article.querySelector('.calendar-leaders__pills[data-role="leads"]');
     var emails = Array.prototype.map.call(
-      card.querySelectorAll('input[type="checkbox"]:checked'),
-      function (input) { return input.value; }
+      leadsZone ? leadsZone.querySelectorAll('.calendar-pill') : [],
+      function (pill) { return pill.dataset.email; }
     );
 
     button.disabled = true;
@@ -436,6 +554,13 @@
           statusEl.className = 'calendar-leaders__status calendar-leaders__status--error';
           return;
         }
+        // Persisted — the current zone assignment is the new baseline, so
+        // the board reads as clean again until the next drag.
+        Array.prototype.forEach.call(article.querySelectorAll('.calendar-pill'), function (pill) {
+          var zone = pill.closest('.calendar-leaders__pills');
+          if (zone) pill.dataset.original = zone.dataset.role;
+        });
+        button.hidden = true;
         statusEl.textContent = 'Saved.';
         statusEl.className = 'calendar-leaders__status calendar-leaders__status--success';
       })

@@ -659,27 +659,79 @@ footer {
 /* ---- Organizer: pick leaders from an event's guest list ---- */
 .calendar-leaders {
   flex: 0 0 auto;
-  max-width: 260px;
-  text-align: left;
+  max-width: 220px;
+  text-align: right;
 }
 
-.calendar-leaders__title {
-  font-family: 'Poppins', sans-serif;
-  font-weight: 500;
-  font-size: 0.74rem;
-  letter-spacing: 1.5px;
-  text-transform: uppercase;
-  color: var(--cream-dim);
-  margin-bottom: 8px;
+/* Same specificity clash as .calendar-register [hidden] above: .btn sets
+   `display`, which otherwise beats the `hidden` attribute's UA rule. */
+.calendar-leaders [hidden] {
+  display: none;
 }
 
-.calendar-leaders__option {
+/* The pill board itself sits in the event body (left column), not inside
+   .calendar-leaders — that wrapper is only the right-hand Save control.
+   Leads sit on top, Volunteers below, each row matching the view-only
+   "Leads: A, B" layout — label and pills share the same line. */
+.calendar-leaders__board {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.calendar-leaders__row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
-  font-size: 0.9rem;
-  margin-bottom: 6px;
-  cursor: pointer;
+}
+
+.calendar-leaders__row-label {
+  flex: 0 0 auto;
+  color: var(--cream-dim);
+  font-size: 0.95rem;
+}
+
+.calendar-leaders__pills {
+  flex: 1 1 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 6px;
+  min-height: 32px;
+  padding: 4px;
+  border: 1.5px dashed rgba(245, 233, 224, 0.25);
+  border-radius: 12px;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.calendar-leaders__pills--over {
+  border-color: var(--crimson-bright);
+  background: rgba(229, 31, 39, 0.08);
+}
+
+.calendar-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 14px;
+  border-radius: 40px;
+  border: 1.5px solid var(--cream-dim);
+  color: var(--cream);
+  font-size: 0.82rem;
+  background: rgba(245, 233, 224, 0.06);
+  cursor: grab;
+  user-select: none;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.calendar-pill:hover {
+  border-color: var(--cream);
+}
+
+.calendar-pill--dragging {
+  opacity: 0.4;
+  cursor: grabbing;
 }
 
 .calendar-leaders__save {
