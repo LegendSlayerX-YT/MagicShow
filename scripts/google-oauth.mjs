@@ -3,9 +3,11 @@
    One-time Google consent → refresh token
    -----------------------------------------------------------
    /api/register edits the guest list of events on the club
-   calendar. Google only allows that from the calendar's owner,
-   so the owner signs in here once and the Worker reuses the
-   resulting refresh token forever after.
+   calendar, and /api/hours appends/updates rows in the
+   volunteer-hours Google Sheet (see scripts/create-hours-sheet.mjs).
+   Google only allows either from the resource's owner, so the
+   owner signs in here once and the Worker reuses the resulting
+   refresh token forever after.
 
    Usage:
      node scripts/google-oauth.mjs <client-id> <client-secret>
@@ -14,8 +16,13 @@
    type "Web application" with this exact redirect URI:
      http://localhost:8976/callback
 
-   Sign in as the calendar owner. The script prints the three
-   secrets to paste into .dev.vars.
+   Sign in as the calendar/sheet owner. The script prints the
+   three secrets to paste into .dev.vars.
+
+   NOTE: if you already have a refresh token from before volunteer
+   hours existed, it only carries the calendar.events scope and
+   will fail on Sheets calls — re-run this script once to get a
+   token that covers both.
    =========================================================== */
 
 import { createServer } from 'node:http';
@@ -23,7 +30,10 @@ import { randomBytes } from 'node:crypto';
 
 const PORT = 8976;
 const REDIRECT_URI = `http://localhost:${PORT}/callback`;
-const SCOPE = 'https://www.googleapis.com/auth/calendar.events';
+const SCOPE = [
+  'https://www.googleapis.com/auth/calendar.events',
+  'https://www.googleapis.com/auth/spreadsheets'
+].join(' ');
 
 const [clientId, clientSecret] = process.argv.slice(2);
 if (!clientId || !clientSecret) {
@@ -97,4 +107,7 @@ Success. Add these to .dev.vars, then run ./deploy.sh:
 GOOGLE_OAUTH_CLIENT_ID="${clientId}"
 GOOGLE_OAUTH_CLIENT_SECRET="${clientSecret}"
 GOOGLE_OAUTH_REFRESH_TOKEN="${token.refresh_token}"
+
+If you haven't yet, also run scripts/create-hours-sheet.mjs to create the
+volunteer-hours spreadsheet using this same refresh token.
 `);

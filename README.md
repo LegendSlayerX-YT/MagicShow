@@ -8,6 +8,7 @@ API calls so the API keys never reach the browser.
 - **About Us** (`about.html`) — club member cards (currently Henry Chen).
 - **Calendar** (`calendar.html`) — public Google Calendar events fetched and rendered in a themed list for the rolling window from 3 days ago through 7 days ahead. Upcoming events have a **Register** button that adds the visitor's email to the event's guest list.
 - **Archives** (`archives.html`) — previous shows, pulled **live** from your public YouTube playlist, with a local fallback list.
+- **Volunteer Hours** (`hours.html`) — signed-in visitors log hours (amount, date, and optionally which event) to a Google Sheet; organizers see a pending queue with Verify/Deny buttons instead, and volunteers see their own submission history plus a running total of verified hours.
 
 ---
 
@@ -18,7 +19,8 @@ MagicShow/
 ├── wrangler.jsonc          # Cloudflare Workers config (assets + Worker + vars)
 ├── .dev.vars.example       # Template for local API keys — copy to .dev.vars
 ├── scripts/
-│   └── google-oauth.mjs    # One-time consent → refresh token for registrations
+│   ├── google-oauth.mjs       # One-time consent → refresh token (calendar + sheets)
+│   └── create-hours-sheet.mjs # One-time: creates the volunteer-hours Google Sheet
 └── src/
     ├── worker/
     │   └── index.js        # /api/* relay; holds the Google API keys
@@ -27,13 +29,15 @@ MagicShow/
         ├── about.html      # About Us
         ├── calendar.html   # Calendar (public Google Calendar events)
         ├── archives.html   # Archives (videos)
+        ├── hours.html      # Volunteer Hours (log hours / verify queue)
         ├── css/styles.css  # All styles
         └── js/
             ├── calendar.js # Calls /api/calendar + renders the rolling date range
             ├── main.js     # Nav toggle + footer year
             ├── magic-bg.js # Home animated background
             ├── config.js   # ← EDIT THIS: video overrides + fallback list
-            └── archives.js # Calls /api/archives + renders the shows
+            ├── archives.js # Calls /api/archives + renders the shows
+            └── hours.js    # Calls /api/hours(+/decide) + renders the log form / verify queue
 ```
 
 ## The API relay
@@ -47,6 +51,9 @@ the pages call their own origin and the Worker adds the key server-side:
 | `GET /api/calendar?timeMin=…&timeMax=…` | `{ timeZone, events[] }` — public events, trimmed to the fields the page renders |
 | `GET /api/archives` | `{ videos[] }` — playlist items, filtered and newest-first |
 | `POST /api/register` | `{ registered, alreadyRegistered }` — adds one email to one event's guest list |
+| `GET /api/hours` | Requires `Authorization: Bearer <Google ID token>`. Organizers get `{ isOrganizer: true, pending[] }`; everyone else gets `{ isOrganizer: false, totalHours, submissions[] }` for just their own rows |
+| `POST /api/hours` | `{ submitted: true }` — appends one volunteer-hours row (`pending`) to the Google Sheet |
+| `POST /api/hours/decide` | Organizer-only. `{ decided: true, decision }` — marks one row `verified` or `denied` |
 
 The Worker validates the requested date range, caches upstream responses at the
 edge for 5 minutes, and never forwards Google's raw error bodies (they can echo
@@ -66,6 +73,9 @@ Non-secret settings live in `wrangler.jsonc` under `vars`:
 | `API_REFERRER` | Sent as the `Referer` on Google calls — see below |
 | `CALENDAR_SEND_UPDATES` | `all` emails the guest their invitation; `none` adds them silently |
 | `GOOGLE_SIGNIN_CLIENT_ID` | OAuth Client ID for Sign in with Google — see [below](#sign-in-with-google) |
+| `ORGANIZER_EMAILS` | Comma-separated emails treated as organizers — no Register button, gets leader-picking + the Volunteer Hours verify queue instead |
+| `GOOGLE_SHEETS_ID` | Spreadsheet ID backing Volunteer Hours — see [below](#volunteer-hours) |
+| `GOOGLE_SHEETS_HOURS_TAB` | Tab name within that spreadsheet (optional, defaults to `Volunteer Hours`) |
 
 Calendar reads authenticate as the calendar's owner over OAuth — see
 "Event registration" below for how that credential is set up; it backs both
@@ -196,6 +206,64 @@ can be used for:
 
 If Google ever rejects the refresh token (`invalid_grant` in `wrangler tail`),
 re-run step 3 and set the secret again.
+
+---
+
+## Volunteer hours
+
+The **Volunteer Hours** page (`hours.html`) lets any signed-in visitor log
+hours — amount, date, and optionally which event, picked from a dropdown of
+real Calendar events so names can't be typo'd or made up. There's no database
+in this project, so submissions are appended as rows to a **Google Sheet**,
+the same way Calendar is the datastore for events. Organizers (see
+`ORGANIZER_EMAILS`) get a different view instead: a pending queue with
+**Verify**/**Deny** buttons. A verified row counts toward that volunteer's
+running total, shown back to them on the same page.
+
+### Why this needs the same OAuth credential as Calendar
+
+Same reasoning as event registration: writing to a Sheet the club owns needs
+real credentials, not a read-only API key, and a service account can't act as
+a personal-account owner without Workspace-only Domain-Wide Delegation. So
+`/api/hours` reuses the calendar-owner's OAuth refresh token — just with the
+Sheets scope added alongside the Calendar one.
+
+### One-time setup
+
+1. **Widen the OAuth scope.** If you already set up event registration before
+   volunteer hours existed, your refresh token only carries `calendar.events`
+   and will fail on Sheets calls. Re-run the consent flow to get a token that
+   also carries `spreadsheets`:
+   ```bash
+   node scripts/google-oauth.mjs <client-id> <client-secret>
+   ```
+   Paste the refreshed values into `.dev.vars` (same three keys as before).
+2. **Create the spreadsheet.** Using that same refresh token (already in
+   `.dev.vars` from step 1):
+   ```bash
+   node scripts/create-hours-sheet.mjs
+   ```
+   This creates a spreadsheet titled "Gasp Machine — Volunteer Hours" with one
+   tab (`Volunteer Hours`) and a header row, and prints the spreadsheet ID.
+3. Paste that ID into `wrangler.jsonc` → `vars.GOOGLE_SHEETS_ID`, then
+   `./deploy.sh`.
+
+### Sheet layout
+
+One tab (`GOOGLE_SHEETS_HOURS_TAB`, default `Volunteer Hours`), header row 1,
+data from row 2 — so it's readable directly in Sheets, not just through the
+site:
+
+| Column | Meaning |
+| --- | --- |
+| `id` | UUID the Worker generates on submit — how `/api/hours/decide` finds the row |
+| `submittedAt` | ISO timestamp of the submission |
+| `email` / `name` | From the volunteer's verified Google sign-in |
+| `hours` | 0–24, entered by the volunteer |
+| `date` | The date they volunteered, `YYYY-MM-DD` |
+| `event` | Resolved server-side from the picked Calendar event's real `summary` — never trusted as free text from the client |
+| `status` | `pending` \| `verified` \| `denied` |
+| `decidedBy` / `decidedAt` | The organizer's email + when, filled in on verify/deny |
 
 ---
 

@@ -34,8 +34,17 @@
     // Calendar page: no Register button, and they get a "pick leaders from
     // this event's guests" control instead (see src/worker/index.js
     // isOrganizerEmail). Matched against the verified Sign in with Google
-    // email, case-insensitively.
-    "ORGANIZER_EMAILS": "chenhenrybunny@gmail.com"
+    // email, case-insensitively. Same list gates the Volunteer Hours page's
+    // verify/deny queue.
+    "ORGANIZER_EMAILS": "chenhenrybunny@gmail.com",
+    // Spreadsheet ID backing the Volunteer Hours page — see
+    // scripts/create-hours-sheet.mjs (README "Volunteer hours"). Not a
+    // secret, just an identifier; the OAuth credential above is what
+    // actually grants write access.
+    "GOOGLE_SHEETS_ID": "1bfdBNr1ZK83UdXu20tzky9QP90fyU-0DS-CvaT68IqE",
+    // Tab name within that spreadsheet. Optional — defaults to
+    // "Volunteer Hours" in code (src/worker/index.js sheetsTab) if unset.
+    "GOOGLE_SHEETS_HOURS_TAB": "Volunteer Hours"
   },
   "observability": {
     "logs": {

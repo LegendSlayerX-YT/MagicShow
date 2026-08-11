@@ -22,10 +22,18 @@
    write (see "calendar-owner auth" below) rather than an API key, so
    there's one Google credential to manage instead of two.
 
+   /api/hours is the other write path: it appends a volunteer's
+   logged hours as a row in a Google Sheet, and lets organizers
+   verify/deny each row. There's no database in this project, so
+   the Sheet is the datastore — same role Calendar plays for events.
+   It reuses the same calendar-owner OAuth credentials (now also
+   scoped for Sheets — see scripts/google-oauth.mjs).
+
    Config:
      vars    — CALENDAR_ID, CALENDAR_TIME_ZONE,
                YOUTUBE_PLAYLIST_ID, YOUTUBE_MAX_RESULTS,
-               CALENDAR_SEND_UPDATES, GOOGLE_SIGNIN_CLIENT_ID
+               CALENDAR_SEND_UPDATES, GOOGLE_SIGNIN_CLIENT_ID,
+               GOOGLE_SHEETS_ID, GOOGLE_SHEETS_HOURS_TAB
      secrets — YOUTUBE_API_KEY,
                GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET,
                GOOGLE_OAUTH_REFRESH_TOKEN
@@ -46,19 +54,24 @@ export default {
     if (request.method === 'POST') {
       if (url.pathname === '/api/register') return handleRegister(request, env);
       if (url.pathname === '/api/leaders') return handleLeaders(request, env);
-      return json({ error: 'Method not allowed' }, 405, { Allow: 'GET, HEAD' });
+      if (url.pathname === '/api/hours') return handleSubmitHours(request, env);
+      if (url.pathname === '/api/hours/decide') return handleDecideHours(request, env);
+      return json({ error: 'Method not allowed' }, 405, { Allow: url.pathname === '/api/hours' ? 'GET, HEAD, POST' : 'GET, HEAD' });
     }
 
     if (request.method !== 'GET' && request.method !== 'HEAD') {
-      var isPostOnly = url.pathname === '/api/register' || url.pathname === '/api/leaders';
-      var allow = isPostOnly ? 'POST' : 'GET, HEAD';
+      var postOnlyPaths = ['/api/register', '/api/leaders', '/api/hours/decide'];
+      var allow = url.pathname === '/api/hours' ? 'GET, HEAD, POST' :
+        postOnlyPaths.indexOf(url.pathname) !== -1 ? 'POST' : 'GET, HEAD';
       return json({ error: 'Method not allowed' }, 405, { Allow: allow });
     }
 
     if (url.pathname === '/api/calendar') return handleCalendar(request, url, env);
     if (url.pathname === '/api/archives') return handleArchives(env);
+    if (url.pathname === '/api/hours') return handleViewHours(request, env);
     if (url.pathname === '/api/register') return json({ error: 'Method not allowed' }, 405, { Allow: 'POST' });
     if (url.pathname === '/api/leaders') return json({ error: 'Method not allowed' }, 405, { Allow: 'POST' });
+    if (url.pathname === '/api/hours/decide') return json({ error: 'Method not allowed' }, 405, { Allow: 'POST' });
 
     return notFound();
   }
@@ -407,6 +420,217 @@ async function handleLeaders(request, env) {
   return noStore(json({ leaders: leaderEmails }, 200));
 }
 
+/* ---------- volunteer hours ---------- */
+
+var MAX_LOGGED_HOURS = 24;
+
+// Any signed-in visitor can submit — organizers just don't get a form for it
+// in the UI (see hours.js), same way they don't get a Register button.
+async function handleSubmitHours(request, env) {
+  var oauth = readOauthConfig(env);
+  if (!oauth || !env.CALENDAR_ID || !env.GOOGLE_SIGNIN_CLIENT_ID || !env.GOOGLE_SHEETS_ID) {
+    return noStore(json({ error: 'Volunteer hours logging is not configured.' }, 503));
+  }
+
+  var contentType = request.headers.get('Content-Type') || '';
+  if (contentType.indexOf('application/json') === -1) {
+    return noStore(json({ error: 'Expected application/json.' }, 415));
+  }
+
+  var origin = request.headers.get('Origin');
+  if (origin && origin !== new URL(request.url).origin) {
+    return noStore(json({ error: 'Cross-origin requests are not allowed.' }, 403));
+  }
+
+  var ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+  if (rateLimited(ip)) {
+    return noStore(json({ error: 'Too many attempts. Try again in a minute.' }, 429, { 'Retry-After': '60' }));
+  }
+
+  var body;
+  try {
+    body = await request.json();
+  } catch (err) {
+    return noStore(json({ error: 'Invalid request body.' }, 400));
+  }
+
+  var credential = typeof body.credential === 'string' ? body.credential : '';
+  if (!credential) {
+    return noStore(json({ error: 'Sign in with Google to log hours.' }, 401));
+  }
+  var identity = await verifyGoogleIdToken(credential, env.GOOGLE_SIGNIN_CLIENT_ID);
+  if (identity.error) return noStore(json({ error: identity.error }, identity.status));
+
+  var hours = typeof body.hours === 'number' ? body.hours : parseFloat(body.hours);
+  if (!Number.isFinite(hours) || hours <= 0 || hours > MAX_LOGGED_HOURS) {
+    return noStore(json({ error: 'Hours must be a number between 0 and ' + MAX_LOGGED_HOURS + '.' }, 400));
+  }
+  hours = Math.round(hours * 100) / 100;
+
+  var date = typeof body.date === 'string' ? body.date.trim() : '';
+  var dateMs = /^\d{4}-\d{2}-\d{2}$/.test(date) ? Date.parse(date + 'T00:00:00Z') : NaN;
+  if (Number.isNaN(dateMs)) {
+    return noStore(json({ error: 'Enter a valid date.' }, 400));
+  }
+  if (dateMs > Date.now()) {
+    return noStore(json({ error: "That date hasn't happened yet." }, 400));
+  }
+
+  var token = await getAccessToken(oauth);
+  if (token.error) return noStore(json({ error: token.error }, token.status));
+
+  // The event name is looked up server-side from the id the client sent,
+  // never trusted as free text — same reasoning as leaders only being
+  // pickable from an event's actual guest list (see handleLeaders).
+  var eventId = typeof body.eventId === 'string' ? body.eventId.trim() : '';
+  var eventSummary = '';
+  if (eventId) {
+    if (eventId.length > 1024 || !/^[A-Za-z0-9_@.-]+$/.test(eventId)) {
+      return noStore(json({ error: 'Unknown event.' }, 400));
+    }
+    var eventPath = 'https://www.googleapis.com/calendar/v3/calendars/' +
+      encodeURIComponent(env.CALENDAR_ID) + '/events/' + encodeURIComponent(eventId);
+    var eventResult = await calendarRequest('GET', eventPath, token.value, null, null);
+    if (eventResult.error) {
+      return noStore(json({ error: eventResult.status === 404 ? 'Unknown event.' : eventResult.error }, eventResult.status));
+    }
+    eventSummary = eventResult.body.summary || 'Untitled event';
+  }
+
+  var row = [
+    crypto.randomUUID(), new Date().toISOString(), identity.email, identity.name || identity.email,
+    hours, date, eventSummary, 'pending', '', ''
+  ];
+
+  var appended = await sheetsAppendRow(env, token.value, row);
+  if (appended.error) return noStore(json({ error: appended.error }, appended.status));
+
+  return noStore(json({ submitted: true }, 200));
+}
+
+// Always requires a credential — unlike /api/calendar, there's no anonymous
+// case here since every response is either "your own hours" or (for an
+// organizer) other people's pending submissions.
+async function handleViewHours(request, env) {
+  var oauth = readOauthConfig(env);
+  if (!oauth || !env.GOOGLE_SIGNIN_CLIENT_ID || !env.GOOGLE_SHEETS_ID) {
+    return noStore(json({ error: 'Volunteer hours is not configured.' }, 503));
+  }
+
+  var authHeader = request.headers.get('Authorization') || '';
+  if (authHeader.indexOf('Bearer ') !== 0) {
+    return noStore(json({ error: 'Sign in with Google to view volunteer hours.' }, 401));
+  }
+  var identity = await verifyGoogleIdToken(authHeader.slice(7), env.GOOGLE_SIGNIN_CLIENT_ID);
+  if (identity.error) return noStore(json({ error: identity.error }, identity.status));
+
+  var token = await getAccessToken(oauth);
+  if (token.error) return noStore(json({ error: token.error }, token.status));
+
+  var result = await sheetsGetRows(env, token.value);
+  if (result.error) return noStore(json({ error: result.error }, result.status));
+
+  // Organizers verify everyone's pending submissions; everyone else only
+  // ever sees their own rows — an organizer's email is verified server-side
+  // above, never claimed by the client (same pattern as isOrganizer on
+  // /api/calendar).
+  if (isOrganizerEmail(identity.email, env)) {
+    var pending = result.rows
+      .filter(function (row) { return row[7] === 'pending'; })
+      .map(function (row) {
+        return { id: row[0], submittedAt: row[1], email: row[2], name: row[3], hours: row[4], date: row[5], event: row[6] };
+      })
+      .sort(function (a, b) { return Date.parse(a.submittedAt) - Date.parse(b.submittedAt); });
+    return noStore(json({ isOrganizer: true, pending: pending }, 200));
+  }
+
+  var mine = result.rows.filter(function (row) { return normalizeEmail(row[2]) === identity.email; });
+  var totalHours = mine.reduce(function (sum, row) {
+    return row[7] === 'verified' ? sum + (Number(row[4]) || 0) : sum;
+  }, 0);
+  var submissions = mine
+    .map(function (row) {
+      return { id: row[0], submittedAt: row[1], hours: row[4], date: row[5], event: row[6], status: row[7] };
+    })
+    .sort(function (a, b) { return Date.parse(b.submittedAt) - Date.parse(a.submittedAt); });
+
+  return noStore(json({
+    isOrganizer: false,
+    totalHours: Math.round(totalHours * 100) / 100,
+    submissions: submissions
+  }, 200));
+}
+
+// Lets an organizer verify or deny one pending submission. Only callable by
+// an email in ORGANIZER_EMAILS, verified the same way as /api/leaders.
+async function handleDecideHours(request, env) {
+  var oauth = readOauthConfig(env);
+  if (!oauth || !env.GOOGLE_SIGNIN_CLIENT_ID || !env.GOOGLE_SHEETS_ID) {
+    return noStore(json({ error: 'Volunteer hours is not configured.' }, 503));
+  }
+
+  var contentType = request.headers.get('Content-Type') || '';
+  if (contentType.indexOf('application/json') === -1) {
+    return noStore(json({ error: 'Expected application/json.' }, 415));
+  }
+
+  var origin = request.headers.get('Origin');
+  if (origin && origin !== new URL(request.url).origin) {
+    return noStore(json({ error: 'Cross-origin requests are not allowed.' }, 403));
+  }
+
+  var ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+  if (rateLimited(ip)) {
+    return noStore(json({ error: 'Too many attempts. Try again in a minute.' }, 429, { 'Retry-After': '60' }));
+  }
+
+  var body;
+  try {
+    body = await request.json();
+  } catch (err) {
+    return noStore(json({ error: 'Invalid request body.' }, 400));
+  }
+
+  var credential = typeof body.credential === 'string' ? body.credential : '';
+  if (!credential) {
+    return noStore(json({ error: 'Sign in with Google first.' }, 401));
+  }
+  var identity = await verifyGoogleIdToken(credential, env.GOOGLE_SIGNIN_CLIENT_ID);
+  if (identity.error) return noStore(json({ error: identity.error }, identity.status));
+  if (!isOrganizerEmail(identity.email, env)) {
+    return noStore(json({ error: 'Not authorized.' }, 403));
+  }
+
+  var id = typeof body.id === 'string' ? body.id.trim() : '';
+  var decision = body.decision === 'verify' ? 'verified' : body.decision === 'deny' ? 'denied' : '';
+  if (!id || !decision) {
+    return noStore(json({ error: 'Invalid request.' }, 400));
+  }
+
+  var token = await getAccessToken(oauth);
+  if (token.error) return noStore(json({ error: token.error }, token.status));
+
+  var result = await sheetsGetRows(env, token.value);
+  if (result.error) return noStore(json({ error: result.error }, result.status));
+
+  var index = result.rows.findIndex(function (row) { return row[0] === id; });
+  if (index === -1) {
+    return noStore(json({ error: 'Unknown submission.' }, 404));
+  }
+  if (result.rows[index][7] !== 'pending') {
+    return noStore(json({ error: 'That submission was already decided.' }, 409));
+  }
+
+  var rowNumber = index + 2; // row 1 is the header; data starts at row 2
+  var updated = await sheetsUpdateRange(
+    env, token.value, 'H' + rowNumber + ':J' + rowNumber,
+    [decision, identity.email, new Date().toISOString()]
+  );
+  if (updated.error) return noStore(json({ error: updated.error }, updated.status));
+
+  return noStore(json({ decided: true, decision: decision }, 200));
+}
+
 // Only events the Calendar page actually shows can be registered for, so a
 // guessed id can't be used to attach attendees to something older or far out.
 function eventIsOpen(event) {
@@ -567,6 +791,79 @@ async function getAccessToken(oauth) {
     expiresAt: now + (payload.expires_in || 3600) * 1000
   };
   return { value: payload.access_token };
+}
+
+/* ---------- volunteer hours (Google Sheets) ----------
+
+   There's no database in this project — the volunteer-hours Sheet plays the
+   same role Calendar plays for events. Same OAuth access token as
+   getAccessToken above (the refresh token now also carries the spreadsheets
+   scope; see scripts/google-oauth.mjs), just pointed at the Sheets API
+   instead of the Calendar API.
+   ------------------------------------------------------ */
+
+var SHEETS_VALUES_BASE = 'https://sheets.googleapis.com/v4/spreadsheets/';
+
+function sheetsTab(env) {
+  return env.GOOGLE_SHEETS_HOURS_TAB || 'Volunteer Hours';
+}
+
+async function sheetsRequest(method, url, accessToken, body) {
+  var init = { method: method, headers: { Authorization: 'Bearer ' + accessToken } };
+  if (body) {
+    init.headers['Content-Type'] = 'application/json';
+    init.body = JSON.stringify(body);
+  }
+
+  var response;
+  try {
+    response = await fetch(url, init);
+  } catch (err) {
+    return { error: 'Sheets request failed.', status: 502 };
+  }
+
+  if (!response.ok) {
+    // Google's body can echo the request; log it, don't return it.
+    var detail = await response.text().catch(function () { return ''; });
+    console.warn('Sheets ' + method + ' failed: ' + response.status + ' ' + detail.slice(0, 500));
+    if (response.status === 404) return { error: 'Volunteer hours sheet not found.', status: 502 };
+    if (response.status === 401 || response.status === 403) {
+      return { error: 'The calendar account cannot edit the volunteer hours sheet.', status: 502 };
+    }
+    return { error: 'Sheets returned ' + response.status + '.', status: 502 };
+  }
+
+  try {
+    return { body: await response.json() };
+  } catch (err) {
+    return { error: 'Sheets returned an unreadable response.', status: 502 };
+  }
+}
+
+// Skips the header row (row 1) — every row here is row index + 2 in the
+// actual sheet. UNFORMATTED_VALUE keeps `hours` a JS number instead of a
+// locale-formatted string.
+async function sheetsGetRows(env, accessToken) {
+  var range = encodeURIComponent(sheetsTab(env) + '!A2:J');
+  var url = SHEETS_VALUES_BASE + encodeURIComponent(env.GOOGLE_SHEETS_ID) +
+    '/values/' + range + '?valueRenderOption=UNFORMATTED_VALUE';
+  var result = await sheetsRequest('GET', url, accessToken, null);
+  if (result.error) return result;
+  return { rows: result.body.values || [] };
+}
+
+async function sheetsAppendRow(env, accessToken, row) {
+  var range = encodeURIComponent(sheetsTab(env) + '!A:J');
+  var url = SHEETS_VALUES_BASE + encodeURIComponent(env.GOOGLE_SHEETS_ID) +
+    '/values/' + range + ':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS';
+  return sheetsRequest('POST', url, accessToken, { values: [row] });
+}
+
+async function sheetsUpdateRange(env, accessToken, a1Range, row) {
+  var range = encodeURIComponent(sheetsTab(env) + '!' + a1Range);
+  var url = SHEETS_VALUES_BASE + encodeURIComponent(env.GOOGLE_SHEETS_ID) +
+    '/values/' + range + '?valueInputOption=RAW';
+  return sheetsRequest('PUT', url, accessToken, { values: [row] });
 }
 
 /* ---------- visitor sign-in (Sign in with Google) ----------
