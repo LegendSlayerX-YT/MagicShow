@@ -501,13 +501,12 @@ async function verifyGoogleIdToken(credential, expectedAudience) {
 // attendees, organizer emails, and conferencing links we don't want public.
 function trimEvent(event, viewerEmail) {
   var trimmed = {
-    // The page sends this back to /api/register. Not a secret — it's the
-    // same id already encoded in htmlLink's `eid` parameter.
+    // The page sends this back to /api/register. Not a secret — Google
+    // event ids aren't guessable-but-sensitive, just opaque identifiers.
     id: event.id || '',
     summary: event.summary || '',
     location: event.location || '',
     description: event.description || '',
-    htmlLink: event.htmlLink || '',
     start: {},
     end: {}
   };

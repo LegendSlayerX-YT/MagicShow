@@ -39,20 +39,21 @@
     return !claims || !claims.exp || claims.exp * 1000 <= Date.now();
   }
 
+  // Google's own rendered button can't be recolored to match the site —
+  // theme/shape/size are the whole customization surface. Pill + dark gets
+  // it as close to the site's rounded crimson buttons as their API allows.
   function renderSignedOut() {
     container.innerHTML = '<div id="google-signin-button"></div>';
-    if (window.google && window.google.accounts && window.google.accounts.id) {
-      window.google.accounts.id.renderButton(
-        document.getElementById('google-signin-button'),
-        { theme: 'outline', size: 'medium', type: 'standard', text: 'signin' }
-      );
-    }
+    window.google.accounts.id.renderButton(
+      document.getElementById('google-signin-button'),
+      { theme: 'filled_black', size: 'medium', shape: 'pill', text: 'signin', logo_alignment: 'left' }
+    );
   }
 
   function renderSignedIn() {
     container.innerHTML =
       '<div class="nav__auth-signed-in">' +
-        '<span class="nav__auth-email">' + escapeHtml(state.email) + '</span>' +
+        '<span class="nav__auth-email">' + escapeHtml(state.name) + '</span>' +
         '<button type="button" class="nav__auth-signout">Sign out</button>' +
       '</div>';
     container.querySelector('.nav__auth-signout').addEventListener('click', signOut);

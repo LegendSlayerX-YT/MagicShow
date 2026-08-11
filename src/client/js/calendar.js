@@ -136,18 +136,17 @@
         var description = event.description ?
           '<p class="calendar-event__meta">' + escapeHtml(event.description.split('\n')[0]) + '</p>' : '';
         var summary = event.summary || 'Untitled event';
-        var link = event.htmlLink ?
-          '<a class="calendar-event__link" href="' + event.htmlLink + '" target="_blank" rel="noopener">View details</a>' : '';
         var register = registrationOpen && event.id && !hasEnded(event) ?
           registerMarkup(event) : '';
 
         return '' +
           '<article class="calendar-event">' +
-            '<p class="calendar-event__time">' + escapeHtml(timeLabel(event)) + '</p>' +
-            '<h3 class="calendar-event__title">' + escapeHtml(summary) + '</h3>' +
-            location +
-            description +
-            link +
+            '<div class="calendar-event__body">' +
+              '<p class="calendar-event__time">' + escapeHtml(timeLabel(event)) + '</p>' +
+              '<h3 class="calendar-event__title">' + escapeHtml(summary) + '</h3>' +
+              location +
+              description +
+            '</div>' +
             register +
           '</article>';
       }).join('') : '<p class="calendar-day__empty">No public events.</p>';
