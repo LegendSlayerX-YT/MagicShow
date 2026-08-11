@@ -29,7 +29,13 @@
     // value also goes in src/client/js/config.js — see README. Requires
     // this site's origin added under "Authorized JavaScript origins" on
     // that Client ID in Google Cloud Console.
-    "GOOGLE_SIGNIN_CLIENT_ID": "600675471306-546l8m5jl8jlf6dqmmuje7gu6bs8a0ie.apps.googleusercontent.com"
+    "GOOGLE_SIGNIN_CLIENT_ID": "600675471306-546l8m5jl8jlf6dqmmuje7gu6bs8a0ie.apps.googleusercontent.com",
+    // Comma-separated Google account emails treated as organizers on the
+    // Calendar page: no Register button, and they get a "pick leaders from
+    // this event's guests" control instead (see src/worker/index.js
+    // isOrganizerEmail). Matched against the verified Sign in with Google
+    // email, case-insensitively.
+    "ORGANIZER_EMAILS": "chenhenrybunny@gmail.com"
   },
   "observability": {
     "logs": {

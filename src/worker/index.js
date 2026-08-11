@@ -45,17 +45,20 @@ export default {
 
     if (request.method === 'POST') {
       if (url.pathname === '/api/register') return handleRegister(request, env);
+      if (url.pathname === '/api/leaders') return handleLeaders(request, env);
       return json({ error: 'Method not allowed' }, 405, { Allow: 'GET, HEAD' });
     }
 
     if (request.method !== 'GET' && request.method !== 'HEAD') {
-      var allow = url.pathname === '/api/register' ? 'POST' : 'GET, HEAD';
+      var isPostOnly = url.pathname === '/api/register' || url.pathname === '/api/leaders';
+      var allow = isPostOnly ? 'POST' : 'GET, HEAD';
       return json({ error: 'Method not allowed' }, 405, { Allow: allow });
     }
 
     if (url.pathname === '/api/calendar') return handleCalendar(request, url, env);
     if (url.pathname === '/api/archives') return handleArchives(env);
     if (url.pathname === '/api/register') return json({ error: 'Method not allowed' }, 405, { Allow: 'POST' });
+    if (url.pathname === '/api/leaders') return json({ error: 'Method not allowed' }, 405, { Allow: 'POST' });
 
     return notFound();
   }
@@ -103,6 +106,11 @@ async function handleCalendar(request, url, env) {
     if (!identity.error) viewerEmail = identity.email;
   }
 
+  // Organizers (see ORGANIZER_EMAILS) don't register as guests — they pick
+  // leaders from the guest list instead. isOrganizer is only ever derived
+  // from a verified viewerEmail above, never from anything the client claims.
+  var isOrganizer = !!viewerEmail && isOrganizerEmail(viewerEmail, env);
+
   // Attendee names are only included when the caller asks for them — the
   // past-events slider needs them, but the default (future) request should
   // keep costing nothing extra in exposed data. See trimEvent for why this
@@ -111,13 +119,14 @@ async function handleCalendar(request, url, env) {
 
   var events = (data.body.items || [])
     .filter(function (event) { return event && event.status !== 'cancelled'; })
-    .map(function (event) { return trimEvent(event, viewerEmail, includeAttendees); });
+    .map(function (event) { return trimEvent(event, viewerEmail, includeAttendees, isOrganizer); });
 
   return json({
     timeZone: timeZone,
     // Reaching here already proved the calendar-owner OAuth credentials
     // work; registration also needs the Sign in with Google client id.
     registrationOpen: !!env.GOOGLE_SIGNIN_CLIENT_ID,
+    isOrganizer: isOrganizer,
     events: events
   // Keyed on whether a credential was *presented*, not whether it verified —
   // a transient tokeninfo hiccup must never get cached as "signed out" for
@@ -303,6 +312,99 @@ async function handleRegister(request, env) {
   }
 
   return noStore(json({ error: 'Could not save your registration. Please try again.' }, 503));
+}
+
+/* ---------- leader picks ---------- */
+
+// Lets an organizer mark which registered guests are leading an event. Only
+// callable by an email in ORGANIZER_EMAILS — verified the same way as
+// /api/register, off a Google-signed credential the client can't forge.
+async function handleLeaders(request, env) {
+  var oauth = readOauthConfig(env);
+  if (!oauth || !env.CALENDAR_ID || !env.GOOGLE_SIGNIN_CLIENT_ID) {
+    return noStore(json({ error: 'Not configured.' }, 503));
+  }
+
+  var contentType = request.headers.get('Content-Type') || '';
+  if (contentType.indexOf('application/json') === -1) {
+    return noStore(json({ error: 'Expected application/json.' }, 415));
+  }
+
+  var origin = request.headers.get('Origin');
+  if (origin && origin !== new URL(request.url).origin) {
+    return noStore(json({ error: 'Cross-origin requests are not allowed.' }, 403));
+  }
+
+  var ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+  if (rateLimited(ip)) {
+    return noStore(json({ error: 'Too many attempts. Try again in a minute.' }, 429, { 'Retry-After': '60' }));
+  }
+
+  var body;
+  try {
+    body = await request.json();
+  } catch (err) {
+    return noStore(json({ error: 'Invalid request body.' }, 400));
+  }
+
+  var eventId = typeof body.eventId === 'string' ? body.eventId.trim() : '';
+  if (!eventId || eventId.length > 1024 || !/^[A-Za-z0-9_@.-]+$/.test(eventId)) {
+    return noStore(json({ error: 'Unknown event.' }, 400));
+  }
+
+  var credential = typeof body.credential === 'string' ? body.credential : '';
+  if (!credential) {
+    return noStore(json({ error: 'Sign in with Google first.' }, 401));
+  }
+  var identity = await verifyGoogleIdToken(credential, env.GOOGLE_SIGNIN_CLIENT_ID);
+  if (identity.error) return noStore(json({ error: identity.error }, identity.status));
+  if (!isOrganizerEmail(identity.email, env)) {
+    return noStore(json({ error: 'Not authorized.' }, 403));
+  }
+
+  var requested = Array.isArray(body.leaders) ? body.leaders : [];
+  var leaderEmails = requested
+    .map(function (email) { return typeof email === 'string' ? normalizeEmail(email) : ''; })
+    .filter(Boolean);
+
+  var token = await getAccessToken(oauth);
+  if (token.error) return noStore(json({ error: token.error }, token.status));
+
+  var path = 'https://www.googleapis.com/calendar/v3/calendars/' +
+    encodeURIComponent(env.CALENDAR_ID) + '/events/' + encodeURIComponent(eventId);
+
+  var current = await calendarRequest('GET', path, token.value, null, null);
+  if (current.error) {
+    return noStore(json({ error: current.status === 404 ? 'Unknown event.' : current.error }, current.status));
+  }
+
+  var event = current.body;
+  if (event.status === 'cancelled') {
+    return noStore(json({ error: 'That event was cancelled.' }, 409));
+  }
+
+  // Leaders must be picked from the event's actual guest list — never let
+  // the request write an arbitrary email into the description.
+  var attendees = Array.isArray(event.attendees) ? event.attendees : [];
+  var attendeeEmails = {};
+  attendees.forEach(function (attendee) {
+    var email = normalizeEmail(attendee && attendee.email);
+    if (email) attendeeEmails[email] = true;
+  });
+  leaderEmails = leaderEmails.filter(function (email) { return attendeeEmails[email]; });
+
+  var visible = splitDescription(event.description || '').visible;
+  var payload = { description: buildDescription(visible, leaderEmails) };
+
+  // No sendUpdates here — this only rewrites the description, and guests
+  // shouldn't get an email every time an organizer adjusts the leader list.
+  var saved = await calendarRequest('PATCH', path, token.value, payload, current.etag);
+  if (saved.status === 412) {
+    return noStore(json({ error: 'That event changed while saving. Please try again.' }, 409));
+  }
+  if (saved.error) return noStore(json({ error: saved.error }, saved.status));
+
+  return noStore(json({ leaders: leaderEmails }, 200));
 }
 
 // Only events the Calendar page actually shows can be registered for, so a
@@ -514,14 +616,20 @@ async function verifyGoogleIdToken(credential, expectedAudience) {
 
 // Only forward the fields the calendar page renders. Google returns
 // attendees, organizer emails, and conferencing links we don't want public.
-function trimEvent(event, viewerEmail, includeAttendees) {
+function trimEvent(event, viewerEmail, includeAttendees, isOrganizer) {
+  // Leader picks live as a JSON tail on the event description (see
+  // splitDescription) so no extra Calendar field/permission is needed. The
+  // visible part is all that ever reaches the browser as `description` —
+  // for every viewer, organizer included — so the tail never shows up in
+  // page content or a fetch() response body.
+  var parsedDescription = splitDescription(event.description || '');
   var trimmed = {
     // The page sends this back to /api/register. Not a secret — Google
     // event ids aren't guessable-but-sensitive, just opaque identifiers.
     id: event.id || '',
     summary: event.summary || '',
     location: event.location || '',
-    description: event.description || '',
+    description: parsedDescription.visible,
     start: {},
     end: {}
   };
@@ -543,18 +651,87 @@ function trimEvent(event, viewerEmail, includeAttendees) {
       return normalizeEmail(attendee && attendee.email) === viewerEmail;
     });
   }
-  // The past-events slider shows who's coming, but never email addresses —
-  // only whatever display name a guest set on their own RSVP. Declined and
-  // resource (room/equipment) entries aren't people who are "attending".
+  // The past-events slider and the daily list both show who's coming, split
+  // into leads vs. everyone else, but never email addresses — only whatever
+  // display name a guest set on their own RSVP. Declined and resource
+  // (room/equipment) entries aren't people who are "attending", and neither
+  // is the organizer when Google also lists them as an attendee.
   if (includeAttendees) {
     var guests = Array.isArray(event.attendees) ? event.attendees : [];
-    trimmed.attendees = guests
+    var leaderEmails = {};
+    parsedDescription.leaders.forEach(function (email) { leaderEmails[email] = true; });
+    trimmed.leads = [];
+    trimmed.volunteers = [];
+    guests.forEach(function (attendee) {
+      if (!attendee || attendee.resource || attendee.organizer || attendee.responseStatus === 'declined') return;
+      var name = attendee.displayName || 'Guest';
+      var email = normalizeEmail(attendee.email);
+      (email && leaderEmails[email] ? trimmed.leads : trimmed.volunteers).push(name);
+    });
+  }
+  // Organizers pick leaders from the guest list, so — unlike the public
+  // leads/volunteers names above — they need enough to tell guests apart
+  // (email) plus which ones are already marked as leaders.
+  if (isOrganizer) {
+    var candidates = Array.isArray(event.attendees) ? event.attendees : [];
+    trimmed.attendeeDetails = candidates
       .filter(function (attendee) {
-        return attendee && !attendee.resource && attendee.responseStatus !== 'declined';
+        return attendee && !attendee.resource && !attendee.organizer && attendee.responseStatus !== 'declined';
       })
-      .map(function (attendee) { return attendee.displayName || 'Guest'; });
+      .map(function (attendee) {
+        return { email: normalizeEmail(attendee.email), name: attendee.displayName || attendee.email || 'Guest' };
+      })
+      .filter(function (attendee) { return attendee.email; });
+    trimmed.leaders = parsedDescription.leaders;
   }
   return trimmed;
+}
+
+/* ---------- leader picks (stored in the event description) ----------
+
+   Organizers mark which registered guests are leading a given event. That
+   pick has no field of its own on a Calendar event, so it's kept as a JSON
+   line appended after the human-written description — plain visible text,
+   not hidden markup, so it survives an organizer editing the description in
+   the Google Calendar UI (rather than risk the UI's rich-text editor
+   silently stripping something it treats as inert markup on save) and so
+   the pick is visible/auditable directly on the event if anyone goes
+   looking. trimEvent always strips it back out before `description` reaches
+   any client on this site — the public gets it back out as the leads/
+   volunteers split, organizers additionally get the raw parsed `leaders`
+   field — so it never shows up in this site's own pages or responses.
+   ----------------------------------------------------------------- */
+
+var LEADER_MARKER = '\n\nLeaders (auto-managed by the website, do not edit): ';
+
+function splitDescription(raw) {
+  var idx = raw.lastIndexOf(LEADER_MARKER);
+  if (idx === -1) return { visible: raw, leaders: [] };
+
+  var tail = raw.slice(idx + LEADER_MARKER.length).trim();
+  var parsed;
+  try {
+    parsed = JSON.parse(tail);
+  } catch (err) {
+    return { visible: raw, leaders: [] };
+  }
+
+  var emails = Array.isArray(parsed && parsed.emails) ?
+    parsed.emails.filter(function (email) { return typeof email === 'string'; }) : [];
+  return { visible: raw.slice(0, idx), leaders: emails };
+}
+
+function buildDescription(visible, leaderEmails) {
+  var base = visible.replace(/\s+$/, '');
+  if (!leaderEmails.length) return base;
+  return base + LEADER_MARKER + JSON.stringify({ emails: leaderEmails });
+}
+
+function isOrganizerEmail(email, env) {
+  var list = (env.ORGANIZER_EMAILS || '').split(',')
+    .map(function (raw) { return normalizeEmail(raw); })
+    .filter(Boolean);
+  return list.indexOf(email) !== -1;
 }
 
 // timeMin/timeMax come from the browser so the list lines up with the

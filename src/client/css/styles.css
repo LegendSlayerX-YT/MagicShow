@@ -656,6 +656,65 @@ footer {
   cursor: default;
 }
 
+/* ---- Organizer: pick leaders from an event's guest list ---- */
+.calendar-leaders {
+  flex: 0 0 auto;
+  max-width: 260px;
+  text-align: left;
+}
+
+.calendar-leaders__title {
+  font-family: 'Poppins', sans-serif;
+  font-weight: 500;
+  font-size: 0.74rem;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--cream-dim);
+  margin-bottom: 8px;
+}
+
+.calendar-leaders__option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+  margin-bottom: 6px;
+  cursor: pointer;
+}
+
+.calendar-leaders__save {
+  margin-top: 8px;
+  padding: 9px 20px;
+  font-size: 0.74rem;
+}
+
+.calendar-leaders__save:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.calendar-leaders__status {
+  margin-top: 10px;
+  font-size: 0.9rem;
+  color: var(--cream-dim);
+}
+
+.calendar-leaders__status:empty {
+  display: none;
+}
+
+.calendar-leaders__status--success { color: #8fe0a4; }
+.calendar-leaders__status--error { color: #ffb3b7; }
+
+.calendar-leaders__hint {
+  font-family: 'Poppins', sans-serif;
+  font-weight: 500;
+  font-size: 0.74rem;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--cream-dim);
+}
+
 /* ---- Recent past events — horizontal scroll row ---- */
 .calendar-past { padding-bottom: 80px; }
 .calendar-past__title {
@@ -708,6 +767,10 @@ footer {
   color: var(--cream-dim);
   font-size: 0.92rem;
   line-height: 1.5;
+}
+
+.calendar-past-card__attendees + .calendar-past-card__attendees {
+  margin-top: 4px;
 }
 
 /* ===========================================================

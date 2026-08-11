@@ -16,11 +16,15 @@
   var rootCfg = window.CONFIG || {};
   var endpoint = (rootCfg.api && rootCfg.api.calendar) || '/api/calendar';
   var registerEndpoint = (rootCfg.api && rootCfg.api.register) || '/api/register';
+  var leadersEndpoint = (rootCfg.api && rootCfg.api.leaders) || '/api/leaders';
   // Replaced by the relay's time zone once the response lands.
   var timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
   var rangeEl = document.getElementById('calendar-range');
-  // Set from the relay's response before render() runs — see the fetch below.
+  // Both set from the relay's response before render() runs — see the fetch
+  // below. isOrganizer is only ever what the Worker verified server-side
+  // (see handleCalendar), never derived from anything client-side.
   var registrationOpen = false;
+  var isOrganizer = false;
 
   function escapeHtml(s) {
     return String(s || '').replace(/[&<>"']/g, function (c) {
@@ -134,6 +138,58 @@
       '</div>';
   }
 
+  // Organizer-only: pick leaders from this event's registered guests. Only
+  // rendered when the Worker's verified isOrganizer flag says so — see
+  // loadCalendar. attendeeDetails/leaders only ever arrive on that response.
+  function leaderMarkup(event) {
+    var id = escapeHtml(event.id);
+    var attendees = Array.isArray(event.attendeeDetails) ? event.attendeeDetails : [];
+    if (!attendees.length) {
+      return '' +
+        '<div class="calendar-leaders" data-event-id="' + id + '">' +
+          '<p class="calendar-leaders__hint">No registered guests yet.</p>' +
+        '</div>';
+    }
+
+    var currentLeaders = Array.isArray(event.leaders) ? event.leaders : [];
+    var options = attendees.map(function (attendee) {
+      var email = escapeHtml(attendee.email);
+      var checked = currentLeaders.indexOf(attendee.email) !== -1 ? ' checked' : '';
+      return '' +
+        '<label class="calendar-leaders__option">' +
+          '<input type="checkbox" value="' + email + '"' + checked + '>' +
+          escapeHtml(attendee.name) +
+        '</label>';
+    }).join('');
+
+    return '' +
+      '<div class="calendar-leaders" data-event-id="' + id + '">' +
+        '<p class="calendar-leaders__title">Leaders</p>' +
+        options +
+        '<button type="button" class="btn btn--solid calendar-leaders__save">Save leaders</button>' +
+        '<p class="calendar-leaders__status" role="status"></p>' +
+      '</div>';
+  }
+
+  // Shared by the daily list and the past-events slider. `leads` are the
+  // guests an organizer picked (see leaderMarkup); everyone else who
+  // registered shows up as a volunteer. Emails never reach this file — the
+  // Worker already split guests into these two name-only lists server-side.
+  function attendeesMarkup(event) {
+    var leads = Array.isArray(event.leads) ? event.leads : [];
+    var volunteers = Array.isArray(event.volunteers) ? event.volunteers : [];
+    var markup = '';
+    if (leads.length) {
+      markup += '<p class="calendar-event__meta calendar-event__attendees calendar-event__leads">Leads: ' +
+        escapeHtml(leads.join(', ')) + '</p>';
+    }
+    if (volunteers.length) {
+      markup += '<p class="calendar-event__meta calendar-event__attendees calendar-event__volunteers">Volunteers: ' +
+        escapeHtml(volunteers.join(', ')) + '</p>';
+    }
+    return markup;
+  }
+
   function render(days, eventsByDay) {
     list.innerHTML = '';
 
@@ -148,11 +204,14 @@
           '<p class="calendar-event__meta">' + escapeHtml(event.location) + '</p>' : '';
         var description = event.description ?
           '<p class="calendar-event__meta">' + escapeHtml(event.description.split('\n')[0]) + '</p>' : '';
-        var attendeesLine = event.attendees && event.attendees.length ?
-          '<p class="calendar-event__meta calendar-event__attendees">Registered: ' + escapeHtml(event.attendees.join(', ')) + '</p>' : '';
+        var attendeesLine = attendeesMarkup(event);
         var summary = event.summary || 'Untitled event';
-        var register = registrationOpen && event.id && !hasEnded(event) ?
+        // Organizers manage leaders instead of registering themselves — see
+        // leaderMarkup — so the Register button/hint/badge never renders
+        // for them, even while registration is open for everyone else.
+        var register = registrationOpen && !isOrganizer && event.id && !hasEnded(event) ?
           registerMarkup(event) : '';
+        var leaders = isOrganizer && event.id ? leaderMarkup(event) : '';
 
         return '' +
           '<article class="calendar-event">' +
@@ -164,6 +223,7 @@
               attendeesLine +
             '</div>' +
             register +
+            leaders +
           '</article>';
       }).join('') : '<p class="calendar-day__empty">No public events.</p>';
 
@@ -211,10 +271,20 @@
     }).format(new Date(ms));
   }
 
-  function attendeesLabel(event) {
-    var names = Array.isArray(event.attendees) ? event.attendees : [];
-    if (!names.length) return 'No attendees yet.';
-    return names.join(', ');
+  function pastAttendeesMarkup(event) {
+    var leads = Array.isArray(event.leads) ? event.leads : [];
+    var volunteers = Array.isArray(event.volunteers) ? event.volunteers : [];
+    if (!leads.length && !volunteers.length) {
+      return '<p class="calendar-past-card__attendees">No attendees yet.</p>';
+    }
+    var markup = '';
+    if (leads.length) {
+      markup += '<p class="calendar-past-card__attendees">Leads: ' + escapeHtml(leads.join(', ')) + '</p>';
+    }
+    if (volunteers.length) {
+      markup += '<p class="calendar-past-card__attendees">Volunteers: ' + escapeHtml(volunteers.join(', ')) + '</p>';
+    }
+    return markup;
   }
 
   function renderPast(events) {
@@ -234,20 +304,22 @@
           '<p class="calendar-past-card__time">' + escapeHtml(eventDateLabel(event)) +
             ' · ' + escapeHtml(timeLabel(event)) + '</p>' +
           '<h3 class="calendar-past-card__title">' + escapeHtml(summary) + '</h3>' +
-          '<p class="calendar-past-card__attendees">' + escapeHtml(attendeesLabel(event)) + '</p>' +
+          pastAttendeesMarkup(event) +
         '</article>';
     }).join('');
   }
 
   /* ---------- registration ---------- */
 
-  // Reflects a fresh registration into the "Registered: ..." line right
-  // away, so the guest count is right without a reload. Skipped when the
-  // visitor was already on the list — nothing to add.
+  // Reflects a fresh registration into the "Volunteers: ..." line right
+  // away, so the guest count is right without a reload — a new registrant
+  // is always a volunteer; only an organizer promotes someone to a lead,
+  // after the fact, from the guest list. Skipped when the visitor was
+  // already on the list — nothing to add.
   function addAttendee(card, name) {
     var article = card.closest('.calendar-event');
     if (!article) return;
-    var meta = article.querySelector('.calendar-event__attendees');
+    var meta = article.querySelector('.calendar-event__volunteers');
     if (meta) {
       meta.textContent = meta.textContent + ', ' + name;
       return;
@@ -255,8 +327,8 @@
     var body = article.querySelector('.calendar-event__body');
     if (!body) return;
     meta = document.createElement('p');
-    meta.className = 'calendar-event__meta calendar-event__attendees';
-    meta.textContent = 'Registered: ' + name;
+    meta.className = 'calendar-event__meta calendar-event__attendees calendar-event__volunteers';
+    meta.textContent = 'Volunteers: ' + name;
     body.appendChild(meta);
   }
 
@@ -315,10 +387,65 @@
   // The button only ever renders while signed in (see registerMarkup), so
   // there's no signed-out case to handle here.
   list.addEventListener('click', function (evt) {
+    var save = evt.target.closest('.calendar-leaders__save');
+    if (save) {
+      submitLeaders(save.closest('.calendar-leaders'));
+      return;
+    }
     var open = evt.target.closest('.calendar-register__open');
     if (!open) return;
     submitRegistration(open.closest('.calendar-register'));
   });
+
+  // The Save button only ever renders while signed in as an organizer (see
+  // leaderMarkup), so there's no signed-out case to handle here either.
+  function submitLeaders(card) {
+    var auth = window.GoogleAuth;
+    var statusEl = card.querySelector('.calendar-leaders__status');
+    var button = card.querySelector('.calendar-leaders__save');
+
+    if (!auth || !auth.isSignedIn()) {
+      statusEl.textContent = 'Sign in with Google (top right) to save.';
+      statusEl.className = 'calendar-leaders__status calendar-leaders__status--error';
+      return;
+    }
+
+    var emails = Array.prototype.map.call(
+      card.querySelectorAll('input[type="checkbox"]:checked'),
+      function (input) { return input.value; }
+    );
+
+    button.disabled = true;
+    statusEl.textContent = 'Saving…';
+    statusEl.className = 'calendar-leaders__status';
+
+    fetch(leadersEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ eventId: card.dataset.eventId, leaders: emails, credential: auth.getCredential() })
+    })
+      .then(function (response) {
+        return response.json()
+          .catch(function () { return {}; })
+          .then(function (data) { return { ok: response.ok, data: data }; });
+      })
+      .then(function (result) {
+        button.disabled = false;
+        if (!result.ok) {
+          statusEl.textContent = result.data.error || 'Something went wrong. Please try again.';
+          statusEl.className = 'calendar-leaders__status calendar-leaders__status--error';
+          return;
+        }
+        statusEl.textContent = 'Saved.';
+        statusEl.className = 'calendar-leaders__status calendar-leaders__status--success';
+      })
+      .catch(function (error) {
+        console.warn('Saving leaders failed:', error);
+        button.disabled = false;
+        statusEl.textContent = 'Could not reach the server. Please try again.';
+        statusEl.className = 'calendar-leaders__status calendar-leaders__status--error';
+      });
+  }
 
   // Reload on sign-in/out so the register button/hint/badge for every
   // event reflects the new auth state, and signed-in visitors pick up
@@ -371,6 +498,7 @@
         // event times read the same for every visitor.
         if (data.timeZone) timeZone = data.timeZone;
         registrationOpen = !!data.registrationOpen;
+        isOrganizer = !!data.isOrganizer;
 
         var eventsByDay = {};
 
