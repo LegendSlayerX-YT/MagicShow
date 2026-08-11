@@ -140,6 +140,8 @@
           '<p class="calendar-event__meta">' + escapeHtml(event.location) + '</p>' : '';
         var description = event.description ?
           '<p class="calendar-event__meta">' + escapeHtml(event.description.split('\n')[0]) + '</p>' : '';
+        var attendeesLine = event.attendees && event.attendees.length ?
+          '<p class="calendar-event__meta">Registered: ' + escapeHtml(event.attendees.join(', ')) + '</p>' : '';
         var summary = event.summary || 'Untitled event';
         var register = registrationOpen && event.id && !hasEnded(event) ?
           registerMarkup(event) : '';
@@ -151,6 +153,7 @@
               '<h3 class="calendar-event__title">' + escapeHtml(summary) + '</h3>' +
               location +
               description +
+              attendeesLine +
             '</div>' +
             register +
           '</article>';
@@ -356,7 +359,7 @@
     // for this same request (see trimEvent in the Worker) — no extra cost.
     if (auth && auth.isSignedIn()) headers.Authorization = 'Bearer ' + auth.getCredential();
 
-    fetch(fetchUrl(futureStart, futureEndExclusive), { headers: headers })
+    fetch(fetchUrl(futureStart, futureEndExclusive, true), { headers: headers })
       .then(function (response) {
         if (!response.ok) throw new Error('HTTP ' + response.status);
         return response.json();

@@ -230,6 +230,7 @@ async function handleRegister(request, env) {
   var identity = await verifyGoogleIdToken(credential, env.GOOGLE_SIGNIN_CLIENT_ID);
   if (identity.error) return noStore(json({ error: identity.error }, identity.status));
   var email = identity.email;
+  var name = identity.name;
 
   var token = await getAccessToken(oauth);
   if (token.error) return noStore(json({ error: token.error }, token.status));
@@ -277,8 +278,10 @@ async function handleRegister(request, env) {
       return noStore(json({ error: 'That event has reached its guest limit.' }, 409));
     }
 
+    var newAttendee = { email: email, responseStatus: 'needsAction' };
+    if (name) newAttendee.displayName = name;
     var payload = {
-      attendees: attendees.concat([{ email: email, responseStatus: 'needsAction' }]),
+      attendees: attendees.concat([newAttendee]),
       // Public sign-up form — don't let registrants see each other's emails.
       guestsCanSeeOtherGuests: false
     };
@@ -498,7 +501,13 @@ async function verifyGoogleIdToken(credential, expectedAudience) {
 
   var email = normalizeEmail(claims.email);
   if (!email) return { error: 'Could not verify your Google sign-in.', status: 401 };
-  return { email: email };
+  // `name` is a normal OIDC profile claim Google Identity Services includes
+  // on every ID token (no extra consent scope needed) — capturing it here
+  // means new registrations attach a real display name instead of Calendar
+  // falling back to a bare email or, once trimEvent hides email addresses
+  // from the public site, a generic "Guest".
+  var name = typeof claims.name === 'string' ? claims.name.trim() : '';
+  return { email: email, name: name };
 }
 
 /* ---------- helpers ---------- */
