@@ -97,7 +97,8 @@ async function handleCalendar(request, url, env) {
   // credential just means no marks, not a failed request.
   var viewerEmail = null;
   var authHeader = request.headers.get('Authorization') || '';
-  if (authHeader.indexOf('Bearer ') === 0 && env.GOOGLE_SIGNIN_CLIENT_ID) {
+  var presentedCredential = authHeader.indexOf('Bearer ') === 0;
+  if (presentedCredential && env.GOOGLE_SIGNIN_CLIENT_ID) {
     var identity = await verifyGoogleIdToken(authHeader.slice(7), env.GOOGLE_SIGNIN_CLIENT_ID);
     if (!identity.error) viewerEmail = identity.email;
   }
@@ -112,7 +113,18 @@ async function handleCalendar(request, url, env) {
     // work; registration also needs the Sign in with Google client id.
     registrationOpen: !!env.GOOGLE_SIGNIN_CLIENT_ID,
     events: events
-  }, 200, viewerEmail ? { 'Cache-Control': 'private, no-store' } : null);
+  // Keyed on whether a credential was *presented*, not whether it verified —
+  // a transient tokeninfo hiccup must never get cached as "signed out" for
+  // 5 minutes; that would silently hide badges until the cache expired.
+  // Vary is required, not decorative: signed-in and anonymous requests hit
+  // the exact same URL (timeMin/timeMax don't change per visitor), so
+  // without it the browser can't tell the two cache entries apart and may
+  // serve a previously-cached anonymous response to a credentialed request
+  // without ever reaching the Worker.
+  }, 200, Object.assign(
+    { Vary: 'Authorization' },
+    presentedCredential ? { 'Cache-Control': 'private, no-store' } : null
+  ));
 }
 
 async function handleArchives(env) {
