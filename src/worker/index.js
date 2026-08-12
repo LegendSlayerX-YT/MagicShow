@@ -48,7 +48,7 @@
 
 import { normalizeEmail } from './util.js';
 import {
-  findVolunteerTab, buildTabTitle, parseTabTitle,
+  findVolunteerTab, buildTabTitle, parseTabTitle, formatDecider, parseDecider,
   sheetsGetSpreadsheetMeta, sheetsCreateVolunteerTab, sheetsGetTabRows,
   sheetsBatchGetTabRows, sheetsAppendRowToTab, sheetsUpdateTabRange
 } from './hours-sheet.js';
@@ -594,11 +594,19 @@ async function handleViewHours(request, env) {
       var personTotal = personResult.rows.reduce(function (sum, row) {
         return row[6] === 'verified' ? sum + (Number(row[2]) || 0) : sum;
       }, 0);
-      var personSubmissions = personResult.rows
-        .map(function (row) {
-          return { id: row[0], submittedAt: row[1], hours: row[2], date: row[3], event: row[4], status: row[6] };
-        })
-        .sort(function (a, b) { return Date.parse(b.submittedAt) - Date.parse(a.submittedAt); });
+      var personOrganizerEmails = getOrganizerEmails(env);
+      var personLeaderCache = new Map();
+      var personSubmissions = await Promise.all(personResult.rows.map(async function (row) {
+        var submission = { id: row[0], submittedAt: row[1], hours: row[2], date: row[3], event: row[4], status: row[6] };
+        if (row[6] === 'pending') {
+          submission.approvers = await resolveApprovers(env, token.value, row[5] || '', personTab.email, personOrganizerEmails, personLeaderCache);
+        } else {
+          var decider = row[7] ? parseDecider(row[7]) : null;
+          if (decider) submission.decidedBy = decider.name;
+        }
+        return submission;
+      }));
+      personSubmissions.sort(function (a, b) { return Date.parse(b.submittedAt) - Date.parse(a.submittedAt); });
 
       return noStore(json({
         isOrganizer: true,
@@ -643,11 +651,19 @@ async function handleViewHours(request, env) {
   var totalHours = ownResult.rows.reduce(function (sum, row) {
     return row[6] === 'verified' ? sum + (Number(row[2]) || 0) : sum;
   }, 0);
-  var submissions = ownResult.rows
-    .map(function (row) {
-      return { id: row[0], submittedAt: row[1], hours: row[2], date: row[3], event: row[4], eventId: row[5] || '', status: row[6] };
-    })
-    .sort(function (a, b) { return Date.parse(b.submittedAt) - Date.parse(a.submittedAt); });
+  var ownOrganizerEmails = getOrganizerEmails(env);
+  var ownLeaderCache = new Map();
+  var submissions = await Promise.all(ownResult.rows.map(async function (row) {
+    var submission = { id: row[0], submittedAt: row[1], hours: row[2], date: row[3], event: row[4], eventId: row[5] || '', status: row[6] };
+    if (row[6] === 'pending') {
+      submission.approvers = await resolveApprovers(env, token.value, row[5] || '', identity.email, ownOrganizerEmails, ownLeaderCache);
+    } else {
+      var decider = row[7] ? parseDecider(row[7]) : null;
+      if (decider) submission.decidedBy = decider.name;
+    }
+    return submission;
+  }));
+  submissions.sort(function (a, b) { return Date.parse(b.submittedAt) - Date.parse(a.submittedAt); });
 
   if (!isLeader) {
     return noStore(json({
@@ -788,7 +804,7 @@ async function handleDecideHours(request, env) {
   var rowNumber = rowIndex + 2; // row 1 is the header; data starts at row 2
   var updated = await sheetsUpdateTabRange(
     env, token.value, targetTitle, 'G' + rowNumber + ':I' + rowNumber,
-    [decision, identity.email, new Date().toISOString()]
+    [decision, formatDecider(identity.name, identity.email), new Date().toISOString()]
   );
   if (updated.error) return noStore(json({ error: updated.error }, updated.status));
 
@@ -1141,11 +1157,52 @@ function buildDescription(visible, leaderEmails) {
   return base + LEADER_MARKER + JSON.stringify({ emails: leaderEmails });
 }
 
-function isOrganizerEmail(email, env) {
-  var list = (env.ORGANIZER_EMAILS || '').split(',')
+function getOrganizerEmails(env) {
+  return (env.ORGANIZER_EMAILS || '').split(',')
     .map(function (raw) { return normalizeEmail(raw); })
     .filter(Boolean);
-  return list.indexOf(email) !== -1;
+}
+
+function isOrganizerEmail(email, env) {
+  return getOrganizerEmails(env).indexOf(email) !== -1;
+}
+
+// Who could still verify/deny a pending submission: any organizer, plus
+// whoever leads the event it's tied to (if any) — matches the authorization
+// check in handleDecideHours. Only used for the "eligible to approve"
+// tooltip, so a resolution miss (event fetch fails, submitter has no
+// eventId) just means a shorter list, never an error. `eventLeaderCache`
+// memoizes the Calendar fetch per eventId since several pending rows often
+// share the same event.
+async function resolveApprovers(env, accessToken, eventId, excludeEmail, organizerEmails, eventLeaderCache) {
+  var names = organizerEmails.filter(function (email) { return email !== excludeEmail; });
+
+  if (eventId) {
+    if (!eventLeaderCache.has(eventId)) {
+      var eventPath = 'https://www.googleapis.com/calendar/v3/calendars/' +
+        encodeURIComponent(env.CALENDAR_ID) + '/events/' + encodeURIComponent(eventId);
+      var eventResult = await calendarRequest('GET', eventPath, accessToken, null, null);
+      if (eventResult.error) {
+        eventLeaderCache.set(eventId, []);
+      } else {
+        var leaderEmails = splitDescription(eventResult.body.description || '').leaders;
+        var attendees = Array.isArray(eventResult.body.attendees) ? eventResult.body.attendees : [];
+        var nameByEmail = {};
+        attendees.forEach(function (a) {
+          var email = normalizeEmail(a && a.email);
+          if (email) nameByEmail[email] = a.displayName || email;
+        });
+        eventLeaderCache.set(eventId, leaderEmails.map(function (email) {
+          return { email: email, name: nameByEmail[email] || email };
+        }));
+      }
+    }
+    eventLeaderCache.get(eventId).forEach(function (leader) {
+      if (leader.email !== excludeEmail && names.indexOf(leader.name) === -1) names.push(leader.name);
+    });
+  }
+
+  return names;
 }
 
 // timeMin/timeMax come from the browser so the list lines up with the

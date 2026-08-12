@@ -1034,6 +1034,7 @@ footer {
   text-transform: uppercase;
   border: 1.5px solid currentColor;
 }
+.hours-status[title] { cursor: help; }
 .hours-status--pending { color: #ffcf7a; }
 .hours-status--verified { color: #8fe0a4; }
 .hours-status--denied { color: #ffb3b7; }

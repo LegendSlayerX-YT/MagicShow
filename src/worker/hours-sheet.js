@@ -14,7 +14,11 @@
 
      id | submittedAt | hours | date | event | eventId | status | decidedBy | decidedAt
 
-   (No email/name columns — the tab itself is the volunteer.)
+   (No email/name columns — the tab itself is the volunteer.) `decidedBy` is
+   itself "Name (email)" (see formatDecider/parseDecider below) so the site
+   can show who verified/denied a submission without a second lookup; rows
+   decided before that format existed just have a bare email there, which
+   parseDecider also understands.
 
    This is its own module, imported by both index.js and
    scripts/migrate-hours-to-tabs.mjs, rather than living in index.js: the
@@ -56,6 +60,26 @@ export function parseTabTitle(title) {
   var email = normalizeEmail(match[2]);
   if (!email) return null;
   return { name: match[1].trim(), email: email };
+}
+
+// The `decidedBy` cell mirrors buildTabTitle's "Name (email)" convention so
+// the raw Sheet stays human-readable while the site can still recover a
+// display name for the "verified/denied by" tooltip (see hours-common.js).
+export function formatDecider(name, email) {
+  var displayName = String(name || email).replace(/[()]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!displayName) displayName = email;
+  return displayName + ' (' + email + ')';
+}
+
+// Falls back to treating the whole cell as a bare email — covers rows
+// decided before this format existed.
+export function parseDecider(value) {
+  var str = String(value || '').trim();
+  if (!str) return null;
+  var match = /^(.*) \(([^()]+@[^()]+)\)$/.exec(str);
+  if (match) return { name: match[1].trim(), email: normalizeEmail(match[2]) };
+  var email = normalizeEmail(str);
+  return email ? { name: email, email: email } : null;
 }
 
 export function findVolunteerTab(titles, email) {

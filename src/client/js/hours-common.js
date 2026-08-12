@@ -26,8 +26,25 @@ window.HoursCommon = (function () {
     return 'Pending';
   }
 
-  function statusBadge(s) {
-    return '<span class="hours-status hours-status--' + escapeHtml(s) + '">' + statusLabel(s) + '</span>';
+  // A native `title` attribute is enough for a hover tooltip — who can still
+  // decide a pending submission, or who already did for a verified/denied
+  // one (see `approvers`/`decidedBy` on the item, set server-side in
+  // handleViewHours).
+  function statusTooltip(item) {
+    if (item.status === 'pending') {
+      return item.approvers && item.approvers.length ?
+        'Can be approved by: ' + item.approvers.join(', ') : '';
+    }
+    if (item.decidedBy) {
+      return (item.status === 'verified' ? 'Verified' : 'Denied') + ' by ' + item.decidedBy;
+    }
+    return '';
+  }
+
+  function statusBadge(item) {
+    var title = statusTooltip(item);
+    return '<span class="hours-status hours-status--' + escapeHtml(item.status) + '"' +
+      (title ? ' title="' + escapeHtml(title) + '"' : '') + '>' + statusLabel(item.status) + '</span>';
   }
 
   function submissionMarkup(item) {
@@ -36,7 +53,7 @@ window.HoursCommon = (function () {
         '<span class="hours-item__date">' + escapeHtml(formatDate(item.date)) + '</span>' +
         '<span class="hours-item__hours">' + escapeHtml(item.hours) + ' hrs</span>' +
         '<span class="hours-item__event">' + escapeHtml(item.event || '—') + '</span>' +
-        statusBadge(item.status) +
+        statusBadge(item) +
       '</li>';
   }
 
