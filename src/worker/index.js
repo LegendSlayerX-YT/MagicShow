@@ -148,13 +148,21 @@ async function handleCalendar(request, url, env) {
   }
 
   // Top-level managers (see org-chart.js — no Manager in the Org Chart tab)
-  // don't register as guests — they pick leaders from the guest list
-  // instead. isOrganizer is only ever derived from a verified viewerEmail
-  // above, never from anything the client claims.
+  // pick leaders from the guest list in addition to registering like anyone
+  // else. isOrganizer is only ever derived from a verified viewerEmail
+  // above, never from anything the client claims. `chart` is also handed to
+  // trimEvent so it can extend the same leader-picking power to an event's
+  // Area Head (or anyone that Head reports up to) on a per-event basis —
+  // see canManage there — since that's a per-event relation isOrganizer
+  // alone can't express.
   var isOrganizer = false;
+  var chart = null;
   if (viewerEmail && env.GOOGLE_SHEETS_ID) {
     var viewerChart = await getOrgChart(env, token.value);
-    if (!viewerChart.error) isOrganizer = isTopManager(viewerEmail, viewerChart);
+    if (!viewerChart.error) {
+      chart = viewerChart;
+      isOrganizer = isTopManager(viewerEmail, chart);
+    }
   }
 
   // Attendee names are only included when the caller asks for them — the
@@ -165,7 +173,7 @@ async function handleCalendar(request, url, env) {
 
   var events = (data.body.items || [])
     .filter(function (event) { return event && event.status !== 'cancelled'; })
-    .map(function (event) { return trimEvent(event, viewerEmail, includeAttendees, isOrganizer, calendarId); });
+    .map(function (event) { return trimEvent(event, viewerEmail, includeAttendees, isOrganizer, calendarId, chart); });
 
   return json({
     timeZone: timeZone,
@@ -410,14 +418,6 @@ async function handleLeaders(request, env) {
 
   var chart = await getOrgChart(env, token.value);
   if (chart.error) return noStore(json({ error: chart.error }, chart.status));
-  if (!isTopManager(identity.email, chart)) {
-    return noStore(json({ error: 'Not authorized.' }, 403));
-  }
-
-  var requested = Array.isArray(body.leaders) ? body.leaders : [];
-  var leaderEmails = requested
-    .map(function (email) { return typeof email === 'string' ? normalizeEmail(email) : ''; })
-    .filter(Boolean);
 
   var path = 'https://www.googleapis.com/calendar/v3/calendars/' +
     encodeURIComponent(env.CALENDAR_ID) + '/events/' + encodeURIComponent(eventId);
@@ -431,6 +431,23 @@ async function handleLeaders(request, env) {
   if (event.status === 'cancelled') {
     return noStore(json({ error: 'That event was cancelled.' }, 409));
   }
+
+  var parsedDescription = splitDescription(event.description || '');
+
+  // Same rule as canDecideSubmission: a top-level manager, or the Head of
+  // this event's Area (or anyone that Head reports up to) — not just
+  // top-level managers, so an Area Head participating in their own event
+  // can adjust its leaders too.
+  var authorized = isTopManager(identity.email, chart) ||
+    (parsedDescription.area && canUseArea(identity.email, parsedDescription.area, chart));
+  if (!authorized) {
+    return noStore(json({ error: 'Not authorized.' }, 403));
+  }
+
+  var requested = Array.isArray(body.leaders) ? body.leaders : [];
+  var leaderEmails = requested
+    .map(function (email) { return typeof email === 'string' ? normalizeEmail(email) : ''; })
+    .filter(Boolean);
 
   // Leaders must be picked from the event's actual guest list — never let
   // the request write an arbitrary email into the description. The Calendar
@@ -446,7 +463,6 @@ async function handleLeaders(request, env) {
   });
   leaderEmails = leaderEmails.filter(function (email) { return attendeeEmails[email]; });
 
-  var parsedDescription = splitDescription(event.description || '');
   var payload = { description: buildDescription(parsedDescription.visible, leaderEmails, parsedDescription.area) };
 
   // No sendUpdates here — this only rewrites the description, and guests
@@ -915,12 +931,19 @@ async function handleCreateEvent(request, env) {
     end = { dateTime: new Date(endMs).toISOString(), timeZone: timeZone };
   }
 
+  // The creator leads their own event by default — they're on the guest
+  // list (so handleLeaders' guest-list filter doesn't silently drop them
+  // from a later leader-list edit) and named as a leader from the start.
+  var creatorAttendee = { email: identity.email, responseStatus: 'accepted' };
+  if (identity.name) creatorAttendee.displayName = identity.name;
+
   var payload = {
     summary: title,
     location: location,
-    description: buildDescription(description, [], area),
+    description: buildDescription(description, [identity.email], area),
     start: start,
-    end: end
+    end: end,
+    attendees: [creatorAttendee]
   };
 
   var path = 'https://www.googleapis.com/calendar/v3/calendars/' + encodeURIComponent(env.CALENDAR_ID) + '/events';
@@ -1158,7 +1181,7 @@ async function verifyGoogleIdToken(credential, expectedAudience) {
 
 // Only forward the fields the calendar page renders. Google returns
 // attendees, organizer emails, and conferencing links we don't want public.
-function trimEvent(event, viewerEmail, includeAttendees, isOrganizer, calendarId) {
+function trimEvent(event, viewerEmail, includeAttendees, isOrganizer, calendarId, chart) {
   // The Calendar ID isn't a person, it's just whose calendar every event
   // lives on — Google lists that account as an attendee (flagged
   // `organizer: true`) on its own events, but it's never someone who
@@ -1226,8 +1249,15 @@ function trimEvent(event, viewerEmail, includeAttendees, isOrganizer, calendarId
   }
   // Organizers pick leaders from the guest list, so — unlike the public
   // leads/volunteers names above — they need enough to tell guests apart
-  // (email) plus which ones are already marked as leaders.
-  if (isOrganizer) {
+  // (email) plus which ones are already marked as leaders. Same rule
+  // handleLeaders now enforces server-side: a top-level manager, or this
+  // event's Area Head (or anyone that Head reports up to) — not just
+  // top-level managers, so an Area Head sees the leader-picking UI for
+  // events in their own Area even though isOrganizer alone is global.
+  var canManage = isOrganizer ||
+    !!(viewerEmail && chart && parsedDescription.area && canUseArea(viewerEmail, parsedDescription.area, chart));
+  trimmed.canManage = canManage;
+  if (canManage) {
     var candidates = Array.isArray(event.attendees) ? event.attendees : [];
     trimmed.attendeeDetails = candidates
       .filter(function (attendee) {

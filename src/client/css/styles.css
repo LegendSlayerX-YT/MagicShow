@@ -850,6 +850,13 @@ footer {
   gap: 0 16px;
 }
 
+/* Same specificity clash as .calendar-register [hidden] above: the class
+   selector sets `display`, which otherwise beats the `hidden` attribute's UA
+   rule, leaving the timed and all-day date fields visible at the same time. */
+.calendar-add-event__when[hidden] {
+  display: none;
+}
+
 .calendar-event__area { color: var(--crimson-bright); }
 
 /* ---- Recent past events — horizontal scroll row ---- */

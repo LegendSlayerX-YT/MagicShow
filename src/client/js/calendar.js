@@ -24,11 +24,11 @@
   // Replaced by the relay's time zone once the response lands.
   var timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
   var rangeEl = document.getElementById('calendar-range');
-  // Both set from the relay's response before render() runs — see the fetch
-  // below. isOrganizer is only ever what the Worker verified server-side
-  // (see handleCalendar), never derived from anything client-side.
+  // Set from the relay's response before render() runs — see the fetch
+  // below. Per-event leader-picking power (event.canManage) is also only
+  // ever what the Worker verified server-side (see trimEvent in
+  // handleCalendar), never derived from anything client-side.
   var registrationOpen = false;
-  var isOrganizer = false;
   // Which Areas the signed-in visitor may create events for (see
   // handleListAreas) — the Head of an Area, or anyone that Head reports up
   // to. Empty while signed out or while nobody's org-chart position grants
@@ -158,10 +158,11 @@
       '</span>';
   }
 
-  // Organizer-only: this event's registered guests as draggable pills, split
-  // into the Leads/Volunteers zones the organizer can drag between. Only
-  // rendered when the Worker's verified isOrganizer flag says so — see
-  // loadCalendar. attendeeDetails/leaders only ever arrive on that response.
+  // Leader-manager-only: this event's registered guests as draggable pills,
+  // split into the Leads/Volunteers zones a manager can drag between. Only
+  // rendered when the Worker's verified event.canManage flag says so — see
+  // trimEvent in the Worker. attendeeDetails/leaders only ever arrive on
+  // that response.
   function leaderBoardMarkup(event) {
     var attendees = Array.isArray(event.attendeeDetails) ? event.attendeeDetails : [];
     if (!attendees.length) {
@@ -247,17 +248,19 @@
           '<p class="calendar-event__meta calendar-event__area">Area: ' + escapeHtml(event.area) + '</p>' : '';
         var description = event.description ?
           '<p class="calendar-event__meta">' + escapeHtml(event.description.split('\n')[0]) + '</p>' : '';
-        // Organizers get the draggable Leads/Volunteers board in place of
-        // the plain-text attendee line; everyone else keeps the read-only
-        // summary (see attendeesMarkup).
-        var attendeesLine = isOrganizer && event.id ? leaderBoardMarkup(event) : attendeesMarkup(event);
+        // Whoever can manage this event's leaders — a top-level manager, or
+        // this event's Area Head (or anyone that Head reports up to), per
+        // event.canManage — gets the draggable Leads/Volunteers board in
+        // place of the plain-text attendee line; everyone else keeps the
+        // read-only summary (see attendeesMarkup).
+        var attendeesLine = event.canManage && event.id ? leaderBoardMarkup(event) : attendeesMarkup(event);
         var summary = event.summary || 'Untitled event';
-        // Organizers manage leaders instead of registering themselves — see
-        // leaderBoardMarkup — so the Register button/hint/badge never renders
-        // for them, even while registration is open for everyone else.
-        var register = registrationOpen && !isOrganizer && event.id && !hasEnded(event) ?
+        // Managing an event's leaders doesn't stop someone from joining it
+        // themselves too — the Register button/hint/badge renders for
+        // everyone while registration is open, managers included.
+        var register = registrationOpen && event.id && !hasEnded(event) ?
           registerMarkup(event) : '';
-        var leaders = isOrganizer && event.id ? leaderSaveMarkup(event) : '';
+        var leaders = event.canManage && event.id ? leaderSaveMarkup(event) : '';
 
         return '' +
           '<article class="calendar-event">' +
@@ -625,6 +628,7 @@
         '</div>' +
         '<div class="contact__actions">' +
           '<button type="submit" class="btn btn--solid">Create Event</button>' +
+          '<button type="button" class="btn calendar-add-event__cancel">Cancel</button>' +
           '<p class="contact__status contact__status--inline" id="calendar-add-event-status" role="status"></p>' +
         '</div>' +
       '</form>';
@@ -642,6 +646,10 @@
     var form = document.getElementById('calendar-add-event-form');
     addEventContainer.querySelector('.calendar-add-event__toggle').addEventListener('click', function () {
       form.hidden = !form.hidden;
+    });
+    form.querySelector('.calendar-add-event__cancel').addEventListener('click', function () {
+      form.reset();
+      form.hidden = true;
     });
 
     var timedWrap = form.querySelector('.calendar-add-event__when--timed');
@@ -796,7 +804,6 @@
         // event times read the same for every visitor.
         if (data.timeZone) timeZone = data.timeZone;
         registrationOpen = !!data.registrationOpen;
-        isOrganizer = !!data.isOrganizer;
 
         var eventsByDay = {};
 

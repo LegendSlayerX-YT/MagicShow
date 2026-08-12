@@ -153,8 +153,11 @@ for (const tab of TABS) {
 console.log(`
 Done: https://docs.google.com/spreadsheets/d/${spreadsheetId}
 
-Fill in "Areas" with one row per functional area (Area | Head, Head's
-email), and "Org Chart" with one row per person (Employee | Manager, both
-emails — leave Manager blank for a top-level organizer; more than one is
-fine).
+Fill in "Areas" with one row per functional area (Area | Head), and "Org
+Chart" with one row per person (Employee | Manager) — leave Manager blank
+for a top-level organizer; more than one is fine. Head/Employee/Manager
+each accept "Name (email)" or a bare email — same as the volunteer tabs in
+this same spreadsheet. Careful with Manager: blank (or anything that
+doesn't parse) means top-level organizer, so a typo there over-grants
+rather than under-grants.
 `);

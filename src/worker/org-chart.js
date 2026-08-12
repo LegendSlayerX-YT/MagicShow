@@ -18,11 +18,16 @@
    creating an event for that Area (handleCreateEvent in index.js)
    and approving volunteer hours tied to it (canDecideSubmission).
 
-   Cached per-isolate for a minute so one page load's several
-   /api/* calls don't each re-read both tabs from Sheets.
+   Head/Employee/Manager cells accept either a bare email or "Name
+   (email)" — the same convention the rest of this spreadsheet uses
+   (volunteer tabs, decidedBy) — parsed with the same parseDecider
+   used there. A cell that's neither (or a Manager cell that's just
+   blank) is not silently misread as something else: an unparseable
+   Employee/Head is dropped from that row (see cellEmail), and a
+   blank/unparseable Manager is exactly what marks someone top-level,
+   which is deliberate — see isTopManager.
    =========================================================== */
 
-import { normalizeEmail } from './util.js';
 import { SHEETS_BASE, quoteSheetTitle, parseDecider } from './hours-sheet.js';
 
 var AREAS_TAB = 'Areas';
@@ -58,19 +63,27 @@ function normalizeArea(name) {
   return String(name || '').trim();
 }
 
+// Accepts either a bare email or "Name (email)" — same shape parseDecider
+// already handles for the volunteer-hours `decidedBy` column. '' for
+// anything that parses as neither (blank cell included).
+function cellEmail(value) {
+  var parsed = parseDecider(value);
+  return parsed ? parsed.email : '';
+}
+
 function buildChart(areaRows, orgRows) {
   var areaHeads = {};
   areaRows.forEach(function (row) {
     var area = normalizeArea(row[0]);
-    var head = normalizeEmail(row[1]);
+    var head = cellEmail(row[1]);
     if (area && head) areaHeads[area] = head;
   });
 
   var managerOf = {};
   orgRows.forEach(function (row) {
-    var employee = normalizeEmail(row[0]);
+    var employee = cellEmail(row[0]);
     if (!employee) return;
-    managerOf[employee] = normalizeEmail(row[1]); // '' = top-level (no manager)
+    managerOf[employee] = cellEmail(row[1]); // '' = top-level (no manager)
   });
 
   return { areaHeads: areaHeads, managerOf: managerOf };

@@ -121,8 +121,17 @@ organizer — it replaced the old hardcoded `ORGANIZER_EMAILS` var.
 
 | Tab | Columns | Meaning |
 | --- | --- | --- |
-| `Areas` | `Area`, `Head` | One row per functional area (e.g. "Cooking", "Environment", "Science") — `Head` is that area's leader's email. |
+| `Areas` | `Area`, `Head` | One row per functional area (e.g. "Cooking", "Environment", "Science") — `Head` is that area's leader. |
 | `Org Chart` | `Employee`, `Manager` | One row per person — `Manager` is blank for a top-level organizer. More than one top-level organizer is fine (e.g. one per Area tree, or a shared handful for the whole club). |
+
+`Head`, `Employee`, and `Manager` each accept either a bare email or `Name
+(email)` — the same convention already used elsewhere in this spreadsheet
+(volunteer tabs, `decidedBy`), parsed the same way. A cell that's neither
+(or that just names someone with no `(email)`) doesn't match anyone: an
+unparseable `Head`/`Employee` drops that row, and — this is the one to get
+right — an unparseable or blank `Manager` is read as "no manager," i.e. a
+top-level organizer, so a typo there can silently over-grant, not
+under-grant.
 
 **A person may act for an Area** — create events tagged with it (see "Event
 registration" below) and approve volunteer hours tied to it (see "Volunteer
@@ -144,9 +153,10 @@ Creates the `Areas` and `Org Chart` tabs (with header rows) in the
 spreadsheet at `GOOGLE_SHEETS_ID` — safe to re-run, a tab that already exists
 is left untouched. Then fill in the rows by hand directly in Google Sheets:
 
-- `Areas` — one row per functional area, `Head` is that person's email.
-- `Org Chart` — one row per person, `Manager` is their manager's email,
-  blank for a top-level organizer.
+- `Areas` — one row per functional area, `Head` is that person (`Name
+  (email)` or a bare email).
+- `Org Chart` — one row per person, `Manager` is their manager (same
+  format), blank for a top-level organizer.
 
 Both tabs are read by every `/api/*` endpoint that checks authorization
 (`getOrgChart` in `org-chart.js`), cached in the Worker for a minute so one
