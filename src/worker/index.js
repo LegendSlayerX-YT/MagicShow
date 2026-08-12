@@ -541,7 +541,47 @@ async function handleViewHours(request, env) {
         return { id: row[0], submittedAt: row[1], email: row[2], name: row[3], hours: row[4], date: row[5], event: row[6] };
       })
       .sort(function (a, b) { return Date.parse(a.submittedAt) - Date.parse(b.submittedAt); });
-    return noStore(json({ isOrganizer: true, pending: pending }, 200));
+
+    // Every volunteer who has ever submitted, deduped by email, so the
+    // organizer's person picker only ever lists real submitters — same
+    // "options come from real data, never free text" posture as the event
+    // dropdown and the leader picker.
+    var seenVolunteers = {};
+    var volunteers = [];
+    result.rows.forEach(function (row) {
+      var rowEmail = normalizeEmail(row[2]);
+      if (!rowEmail || seenVolunteers[rowEmail]) return;
+      seenVolunteers[rowEmail] = true;
+      volunteers.push({ email: rowEmail, name: row[3] || rowEmail });
+    });
+    volunteers.sort(function (a, b) { return a.name.localeCompare(b.name); });
+
+    var personParam = normalizeEmail(new URL(request.url).searchParams.get('person') || '');
+    if (personParam) {
+      var personEntry = volunteers.filter(function (v) { return v.email === personParam; })[0];
+      if (!personEntry) {
+        return noStore(json({ error: 'Unknown volunteer.' }, 404));
+      }
+      var personRows = result.rows.filter(function (row) { return normalizeEmail(row[2]) === personParam; });
+      var personTotal = personRows.reduce(function (sum, row) {
+        return row[7] === 'verified' ? sum + (Number(row[4]) || 0) : sum;
+      }, 0);
+      var personSubmissions = personRows
+        .map(function (row) {
+          return { id: row[0], submittedAt: row[1], hours: row[4], date: row[5], event: row[6], status: row[7] };
+        })
+        .sort(function (a, b) { return Date.parse(b.submittedAt) - Date.parse(a.submittedAt); });
+
+      return noStore(json({
+        isOrganizer: true,
+        volunteers: volunteers,
+        person: personEntry,
+        totalHours: Math.round(personTotal * 100) / 100,
+        submissions: personSubmissions
+      }, 200));
+    }
+
+    return noStore(json({ isOrganizer: true, pending: pending, volunteers: volunteers }, 200));
   }
 
   var mine = result.rows.filter(function (row) { return normalizeEmail(row[2]) === identity.email; });

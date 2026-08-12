@@ -974,6 +974,17 @@ footer {
 .hours-status--verified { color: #8fe0a4; }
 .hours-status--denied { color: #ffb3b7; }
 
+.hours-lookup {
+  max-width: 720px;
+  margin-top: 40px;
+  padding-top: 32px;
+  border-top: 1px solid rgba(245, 233, 224, 0.12);
+}
+
+.hours-lookup .contact__field { max-width: 360px; }
+
+.hours-lookup #hours-person-result { margin-top: 24px; }
+
 /* ===========================================================
    ARCHIVES — zigzag video grid
    =========================================================== */

@@ -267,7 +267,7 @@
       });
   }
 
-  /* ---------- organizer view: pending queue ---------- */
+  /* ---------- organizer view: pending queue + per-volunteer lookup ---------- */
 
   function organizerItemMarkup(item) {
     var meta = escapeHtml(formatDate(item.date)) + ' · ' + escapeHtml(item.hours) + ' hrs' +
@@ -286,11 +286,70 @@
       '</li>';
   }
 
-  function renderOrganizer(pending) {
+  function personOptionsMarkup(volunteers) {
+    var markup = '<option value="">— select a volunteer —</option>';
+    volunteers.forEach(function (person) {
+      markup += '<option value="' + escapeHtml(person.email) + '">' + escapeHtml(person.name) + '</option>';
+    });
+    return markup;
+  }
+
+  function personHoursMarkup(data) {
+    var submissions = Array.isArray(data.submissions) ? data.submissions : [];
+    var totalHours = typeof data.totalHours === 'number' ? data.totalHours : 0;
+    var rows = submissions.length ?
+      submissions.map(submissionMarkup).join('') :
+      '<li class="hours-item hours-item--empty">No submissions yet.</li>';
+    return '' +
+      '<p class="hours-summary__total">Total verified hours: <strong>' + escapeHtml(totalHours) + '</strong></p>' +
+      '<ul class="hours-list">' + rows + '</ul>';
+  }
+
+  function loadPersonHours(email, resultEl) {
+    var auth = window.GoogleAuth;
+    resultEl.innerHTML = '<p class="archive-status">Loading…</p>';
+    fetch(hoursEndpoint + '?person=' + encodeURIComponent(email), {
+      headers: { Authorization: 'Bearer ' + auth.getCredential() }
+    })
+      .then(function (response) {
+        return response.json()
+          .catch(function () { return {}; })
+          .then(function (data) { return { ok: response.ok, data: data }; });
+      })
+      .then(function (result) {
+        if (!result.ok) {
+          resultEl.innerHTML = '<p class="archive-status">' + escapeHtml(result.data.error || 'Could not load volunteer hours.') + '</p>';
+          return;
+        }
+        resultEl.innerHTML = personHoursMarkup(result.data);
+      })
+      .catch(function (error) {
+        console.warn('Volunteer lookup failed:', error);
+        resultEl.innerHTML = '<p class="archive-status">Could not reach the server. Please try again.</p>';
+      });
+  }
+
+  function renderOrganizer(pending, volunteers) {
     var items = pending.length ?
       pending.map(organizerItemMarkup).join('') :
       '<li class="hours-item hours-item--empty">No pending submissions.</li>';
-    panel.innerHTML = '<ul class="hours-list hours-list--organizer">' + items + '</ul>';
+    panel.innerHTML = '' +
+      '<ul class="hours-list hours-list--organizer">' + items + '</ul>' +
+      '<div class="hours-lookup">' +
+        '<label class="contact__field"><span>View a volunteer’s hours</span>' +
+          '<select class="contact__input" id="hours-person-select">' + personOptionsMarkup(volunteers) + '</select>' +
+        '</label>' +
+        '<div id="hours-person-result"></div>' +
+      '</div>';
+
+    document.getElementById('hours-person-select').addEventListener('change', function (evt) {
+      var resultEl = document.getElementById('hours-person-result');
+      if (!evt.target.value) {
+        resultEl.innerHTML = '';
+        return;
+      }
+      loadPersonHours(evt.target.value, resultEl);
+    });
   }
 
   panel.addEventListener('click', function (evt) {
@@ -359,7 +418,7 @@
           return;
         }
         if (result.data.isOrganizer) {
-          renderOrganizer(result.data.pending || []);
+          renderOrganizer(result.data.pending || [], result.data.volunteers || []);
         } else {
           loadEventOptions(function (events) { renderVolunteer(result.data, events); });
         }

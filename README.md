@@ -8,7 +8,7 @@ API calls so the API keys never reach the browser.
 - **About Us** (`about.html`) — club member cards (currently Henry Chen).
 - **Calendar** (`calendar.html`) — public Google Calendar events fetched and rendered in a themed list for the rolling window from 3 days ago through 7 days ahead. Upcoming events have a **Register** button that adds the visitor's email to the event's guest list.
 - **Archives** (`archives.html`) — previous shows, pulled **live** from your public YouTube playlist, with a local fallback list.
-- **Volunteer Hours** (`hours.html`) — signed-in visitors log hours (amount, date, and optionally which event) to a Google Sheet; organizers see a pending queue with Verify/Deny buttons instead, and volunteers see their own submission history plus a running total of verified hours.
+- **Volunteer Hours** (`hours.html`) — signed-in visitors log hours (amount, date, and optionally which event) to a Google Sheet; organizers see a pending queue with Verify/Deny buttons instead, plus a volunteer picker to look up any submitter's total verified hours and full submission history, and volunteers see their own submission history plus a running total of verified hours.
 
 ---
 
@@ -51,7 +51,8 @@ the pages call their own origin and the Worker adds the key server-side:
 | `GET /api/calendar?timeMin=…&timeMax=…` | `{ timeZone, events[] }` — public events, trimmed to the fields the page renders |
 | `GET /api/archives` | `{ videos[] }` — playlist items, filtered and newest-first |
 | `POST /api/register` | `{ registered, alreadyRegistered }` — adds one email to one event's guest list |
-| `GET /api/hours` | Requires `Authorization: Bearer <Google ID token>`. Organizers get `{ isOrganizer: true, pending[] }`; everyone else gets `{ isOrganizer: false, totalHours, submissions[] }` for just their own rows |
+| `GET /api/hours` | Requires `Authorization: Bearer <Google ID token>`. Organizers get `{ isOrganizer: true, pending[], volunteers[] }`; everyone else gets `{ isOrganizer: false, totalHours, submissions[] }` for just their own rows |
+| `GET /api/hours?person=<email>` | Organizer-only. `{ isOrganizer: true, volunteers[], person, totalHours, submissions[] }` — one volunteer's full history and verified-hours total, for the organizer's person picker |
 | `POST /api/hours` | `{ submitted: true }` — appends one volunteer-hours row (`pending`) to the Google Sheet |
 | `POST /api/hours/decide` | Organizer-only. `{ decided: true, decision }` — marks one row `verified` or `denied` |
 
