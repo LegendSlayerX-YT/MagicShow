@@ -302,70 +302,38 @@ async function handleRegister(request, env) {
     encodeURIComponent(env.CALENDAR_ID) + '/events/' + encodeURIComponent(eventId);
   var sendUpdates = env.CALENDAR_SEND_UPDATES || 'none';
 
-  // attendees is a whole-array field, so this is a read-modify-write.
-  // If-Match + retry keeps two simultaneous registrations from clobbering
-  // each other — but Google sometimes serves this Worker a *weak* ETag for
-  // reasons outside our control (an internal routing/serving detail on
-  // Google's side, confirmed by testing outside the Worker), and a weak
-  // validator can never satisfy If-Match, so it 412s no matter how fresh the
-  // read was. Rather than get stuck permanently unable to register, the
-  // last attempt drops the condition and writes unconditionally — the
-  // "already registered" check just above still catches the common case
-  // (the same visitor's retry), so this only risks a genuine lost update in
-  // the rare case of two different visitors registering for the same event
-  // within the same request.
-  var MAX_ATTEMPTS = 4;
-  for (var attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-    if (attempt > 0) await sleep(attempt * 400);
-    var current = await calendarRequest('GET', path, token.value, null, null);
-    if (current.error) {
-      return noStore(json({ error: current.status === 404 ? 'Unknown event.' : current.error }, current.status));
-    }
+  return updateEventWithRetry(
+    token.value, path, '?sendUpdates=' + encodeURIComponent(sendUpdates),
+    'Could not save your registration. Please try again.', 503,
+    function (event) {
+      if (event.status === 'cancelled') {
+        return { response: noStore(json({ error: 'That event was cancelled.' }, 409)) };
+      }
+      if (!eventIsOpen(event)) {
+        return { response: noStore(json({ error: 'Registration for that event is closed.' }, 409)) };
+      }
 
-    var event = current.body;
-    if (event.status === 'cancelled') {
-      return noStore(json({ error: 'That event was cancelled.' }, 409));
-    }
-    if (!eventIsOpen(event)) {
-      return noStore(json({ error: 'Registration for that event is closed.' }, 409));
-    }
+      var attendees = Array.isArray(event.attendees) ? event.attendees : [];
+      var already = attendees.some(function (attendee) {
+        return normalizeEmail(attendee && attendee.email) === email;
+      });
+      if (already) {
+        return { response: noStore(json({ registered: true, alreadyRegistered: true }, 200)) };
+      }
+      if (attendees.length >= MAX_ATTENDEES) {
+        return { response: noStore(json({ error: 'That event has reached its guest limit.' }, 409)) };
+      }
 
-    var attendees = Array.isArray(event.attendees) ? event.attendees : [];
-    var already = attendees.some(function (attendee) {
-      return normalizeEmail(attendee && attendee.email) === email;
-    });
-    if (already) {
-      return noStore(json({ registered: true, alreadyRegistered: true }, 200));
+      var newAttendee = { email: email, responseStatus: 'needsAction' };
+      if (name) newAttendee.displayName = name;
+      var payload = {
+        attendees: attendees.concat([newAttendee]),
+        // Public sign-up form — don't let registrants see each other's emails.
+        guestsCanSeeOtherGuests: false
+      };
+      return { payload: payload, success: noStore(json({ registered: true, alreadyRegistered: false }, 200)) };
     }
-    if (attendees.length >= MAX_ATTENDEES) {
-      return noStore(json({ error: 'That event has reached its guest limit.' }, 409));
-    }
-
-    var newAttendee = { email: email, responseStatus: 'needsAction' };
-    if (name) newAttendee.displayName = name;
-    var payload = {
-      attendees: attendees.concat([newAttendee]),
-      // Public sign-up form — don't let registrants see each other's emails.
-      guestsCanSeeOtherGuests: false
-    };
-    var conditional = attempt < MAX_ATTEMPTS - 1;
-    var saved = await calendarRequest(
-      'PATCH', path + '?sendUpdates=' + encodeURIComponent(sendUpdates),
-      token.value, payload, conditional ? current.etag : null
-    );
-
-    if (saved.status === 412) {
-      if (conditional) continue; // someone else registered first — re-read
-      // Shouldn't happen — the unconditional attempt sends no If-Match, so
-      // Google has nothing to precondition-fail on. Fail loudly if it does.
-      return noStore(json({ error: 'Could not save your registration. Please try again.' }, 503));
-    }
-    if (saved.error) return noStore(json({ error: saved.error }, saved.status));
-
-    return noStore(json({ registered: true, alreadyRegistered: false }, 200));
-  }
-
-  return noStore(json({ error: 'Could not save your registration. Please try again.' }, 503));
+  );
 }
 
 /* ---------- leader picks ---------- */
@@ -422,58 +390,51 @@ async function handleLeaders(request, env) {
   var path = 'https://www.googleapis.com/calendar/v3/calendars/' +
     encodeURIComponent(env.CALENDAR_ID) + '/events/' + encodeURIComponent(eventId);
 
-  var current = await calendarRequest('GET', path, token.value, null, null);
-  if (current.error) {
-    return noStore(json({ error: current.status === 404 ? 'Unknown event.' : current.error }, current.status));
-  }
-
-  var event = current.body;
-  if (event.status === 'cancelled') {
-    return noStore(json({ error: 'That event was cancelled.' }, 409));
-  }
-
-  var parsedDescription = splitDescription(event.description || '');
-
-  // Same rule as canDecideSubmission: a top-level manager, or the Head of
-  // this event's Area (or anyone that Head reports up to) — not just
-  // top-level managers, so an Area Head participating in their own event
-  // can adjust its leaders too.
-  var authorized = isTopManager(identity.email, chart) ||
-    (parsedDescription.area && canUseArea(identity.email, parsedDescription.area, chart));
-  if (!authorized) {
-    return noStore(json({ error: 'Not authorized.' }, 403));
-  }
-
   var requested = Array.isArray(body.leaders) ? body.leaders : [];
   var leaderEmails = requested
     .map(function (email) { return typeof email === 'string' ? normalizeEmail(email) : ''; })
     .filter(Boolean);
-
-  // Leaders must be picked from the event's actual guest list — never let
-  // the request write an arbitrary email into the description. The Calendar
-  // ID's own account isn't a guest — see trimEvent — so it's excluded here
-  // too, the same way trimEvent keeps it out of attendeeDetails in the first
-  // place.
   var calendarEmail = normalizeEmail(env.CALENDAR_ID);
-  var attendees = Array.isArray(event.attendees) ? event.attendees : [];
-  var attendeeEmails = {};
-  attendees.forEach(function (attendee) {
-    var email = normalizeEmail(attendee && attendee.email);
-    if (email && email !== calendarEmail) attendeeEmails[email] = true;
-  });
-  leaderEmails = leaderEmails.filter(function (email) { return attendeeEmails[email]; });
-
-  var payload = { description: buildDescription(parsedDescription.visible, leaderEmails, parsedDescription.area) };
 
   // No sendUpdates here — this only rewrites the description, and guests
   // shouldn't get an email every time an organizer adjusts the leader list.
-  var saved = await calendarRequest('PATCH', path, token.value, payload, current.etag);
-  if (saved.status === 412) {
-    return noStore(json({ error: 'That event changed while saving. Please try again.' }, 409));
-  }
-  if (saved.error) return noStore(json({ error: saved.error }, saved.status));
+  return updateEventWithRetry(
+    token.value, path, '',
+    'That event changed while saving. Please try again.', 409,
+    function (event) {
+      if (event.status === 'cancelled') {
+        return { response: noStore(json({ error: 'That event was cancelled.' }, 409)) };
+      }
 
-  return noStore(json({ leaders: leaderEmails }, 200));
+      var parsedDescription = splitDescription(event.description || '');
+
+      // Same rule as canDecideSubmission: a top-level manager, or the Head
+      // of this event's Area (or anyone that Head reports up to) — not just
+      // top-level managers, so an Area Head participating in their own
+      // event can adjust its leaders too.
+      var authorized = isTopManager(identity.email, chart) ||
+        (parsedDescription.area && canUseArea(identity.email, parsedDescription.area, chart));
+      if (!authorized) {
+        return { response: noStore(json({ error: 'Not authorized.' }, 403)) };
+      }
+
+      // Leaders must be picked from the event's actual guest list — never
+      // let the request write an arbitrary email into the description. The
+      // Calendar ID's own account isn't a guest — see trimEvent — so it's
+      // excluded here too, the same way trimEvent keeps it out of
+      // attendeeDetails in the first place.
+      var attendees = Array.isArray(event.attendees) ? event.attendees : [];
+      var attendeeEmails = {};
+      attendees.forEach(function (attendee) {
+        var email = normalizeEmail(attendee && attendee.email);
+        if (email && email !== calendarEmail) attendeeEmails[email] = true;
+      });
+      var filteredLeaderEmails = leaderEmails.filter(function (email) { return attendeeEmails[email]; });
+
+      var payload = { description: buildDescription(parsedDescription.visible, filteredLeaderEmails, parsedDescription.area) };
+      return { payload: payload, success: noStore(json({ leaders: filteredLeaderEmails }, 200)) };
+    }
+  );
 }
 
 /* ---------- volunteer hours ---------- */
@@ -1060,6 +1021,53 @@ async function calendarRequest(method, url, accessToken, body, etag) {
   } catch (err) {
     return { error: 'Calendar returned an unreadable response.', status: 502 };
   }
+}
+
+// Read-modify-write against a single Calendar event, with If-Match retry.
+// Google sometimes serves this Worker a *weak* ETag for reasons outside our
+// control (an internal routing/serving detail on Google's side, confirmed
+// by testing outside the Worker), and a weak validator can never satisfy
+// If-Match, so it 412s no matter how fresh the read was. Rather than get
+// stuck permanently unable to save, the last attempt drops the condition
+// and writes unconditionally — this only risks a genuine lost update in the
+// rare case of two concurrent edits landing in the same request.
+//
+// `step(event)` runs against a freshly-read event on every attempt and
+// must return either:
+//   { response }         - stop now and return this Response as-is
+//   { payload, success }  - PATCH this body; return `success` once it saves
+//
+// `queryString` is appended to the PATCH URL (e.g. `?sendUpdates=...`, or
+// '' for none). `conflictMessage`/`conflictStatus` are used if the final,
+// unconditional attempt still comes back 412 (shouldn't happen in practice,
+// since Google has nothing to precondition-fail on with no If-Match).
+async function updateEventWithRetry(token, path, queryString, conflictMessage, conflictStatus, step) {
+  var MAX_ATTEMPTS = 4;
+  for (var attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    if (attempt > 0) await sleep(attempt * 400);
+    var current = await calendarRequest('GET', path, token, null, null);
+    if (current.error) {
+      return noStore(json({ error: current.status === 404 ? 'Unknown event.' : current.error }, current.status));
+    }
+
+    var result = step(current.body);
+    if (result.response) return result.response;
+
+    var conditional = attempt < MAX_ATTEMPTS - 1;
+    var saved = await calendarRequest(
+      'PATCH', path + queryString, token, result.payload, conditional ? current.etag : null
+    );
+
+    if (saved.status === 412) {
+      if (conditional) continue; // someone else edited the event — re-read
+      return noStore(json({ error: conflictMessage }, conflictStatus));
+    }
+    if (saved.error) return noStore(json({ error: saved.error }, saved.status));
+
+    return result.success;
+  }
+
+  return noStore(json({ error: conflictMessage }, conflictStatus));
 }
 
 /* ---------- calendar-owner auth ----------
