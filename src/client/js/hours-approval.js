@@ -127,7 +127,7 @@
     var auth = window.GoogleAuth;
     var statusEl = item.querySelector('.hours-item__status');
     var buttons = item.querySelectorAll('button');
-    buttons.forEach(function (b) { b.disabled = true; });
+    buttons.forEach(function (b) { b.disabled = true; b.style.display = 'none'; });
     statusEl.textContent = decision === 'verify' ? 'Verifying…' : 'Denying…';
 
     fetch(decideEndpoint, {
@@ -142,7 +142,7 @@
       })
       .then(function (result) {
         if (!result.ok) {
-          buttons.forEach(function (b) { b.disabled = false; });
+          buttons.forEach(function (b) { b.disabled = false; b.style.display = ''; });
           statusEl.textContent = result.data.error || 'Something went wrong. Please try again.';
           return;
         }
@@ -154,7 +154,7 @@
       })
       .catch(function (error) {
         console.warn('Deciding submission failed:', error);
-        buttons.forEach(function (b) { b.disabled = false; });
+        buttons.forEach(function (b) { b.disabled = false; b.style.display = ''; });
         statusEl.textContent = 'Could not reach the server. Please try again.';
       });
   }

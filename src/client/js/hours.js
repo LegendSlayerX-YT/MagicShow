@@ -62,17 +62,25 @@
   // and stays under the Worker's 92-day range cap.
   var PAST_DAYS = 90;
 
-  function loadEventOptions(callback) {
+  // credential is required here (unlike calendar.js's anonymous-friendly
+  // fetch) — without it the Worker never sets `registered`, and every event
+  // would fail the attendee filter below.
+  function loadEventOptions(credential, callback) {
     var today = new Date();
     var start = startOfDay(addDays(today, -PAST_DAYS));
     var endExclusive = startOfDay(addDays(today, 1));
     var params = new URLSearchParams({ timeMin: start.toISOString(), timeMax: endExclusive.toISOString() });
 
-    fetch(calendarEndpoint + '?' + params.toString())
+    fetch(calendarEndpoint + '?' + params.toString(), { headers: { Authorization: 'Bearer ' + credential } })
       .then(function (r) { return r.ok ? r.json() : { events: [] }; })
       .then(function (data) { return data.events || []; })
       .catch(function () { return []; })
       .then(function (events) {
+        // Only events the signed-in volunteer actually attended — logging
+        // hours for someone else's event isn't meaningful, and `registered`
+        // (set by the Worker from the Calendar guest list) is exactly that
+        // check already made server-side.
+        events = events.filter(function (event) { return event.registered; });
         events.sort(function (a, b) { return eventStartMs(b) - eventStartMs(a); });
         callback(events);
       });
@@ -318,7 +326,7 @@
           status('Organizers review submissions from <a href="hours-approval.html">Volunteer Hour Approval</a> instead.');
           return;
         }
-        loadEventOptions(function (events) { renderVolunteer(result.data, events); });
+        loadEventOptions(auth.getCredential(), function (events) { renderVolunteer(result.data, events); });
       })
       .catch(function (error) {
         console.warn('Volunteer hours fetch failed:', error);

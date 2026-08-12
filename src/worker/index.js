@@ -617,6 +617,7 @@ async function handleViewHours(request, env) {
 
     var pending = [];
     volunteerTabs.forEach(function (v) {
+      if (v.email === identity.email) return; // no self-approval — see handleDecideHours
       (batch.byTitle[v.title] || []).forEach(function (row) {
         if (row[6] !== 'pending') return;
         pending.push({ id: row[0], submittedAt: row[1], email: v.email, name: v.name || v.email, hours: row[2], date: row[3], event: row[4] });
@@ -664,6 +665,7 @@ async function handleViewHours(request, env) {
 
   var leaderPending = [];
   volunteerTabs.forEach(function (v) {
+    if (v.email === identity.email) return; // no self-approval — see handleDecideHours
     (leaderBatch.byTitle[v.title] || []).forEach(function (row) {
       if (row[6] !== 'pending') return;
       if (!row[5] || !leaderEventIds[row[5]]) return;
@@ -682,11 +684,13 @@ async function handleViewHours(request, env) {
 }
 
 // Lets an organizer, or the leader of the event a submission is tied to,
-// verify or deny one pending submission. Organizer status is verified the
-// same way as /api/leaders; a leader's authorization is checked against the
-// actual event the submission names (its eventId column — see
-// handleSubmitHours), not a cached list, so a leader pick made after the
-// submission still takes effect immediately.
+// verify or deny one pending submission — except their own; a leader (or
+// organizer) can't approve/deny hours they submitted themselves, so a
+// second leader or the organizer has to sign off instead. Organizer status
+// is verified the same way as /api/leaders; a leader's authorization is
+// checked against the actual event the submission names (its eventId
+// column — see handleSubmitHours), not a cached list, so a leader pick
+// made after the submission still takes effect immediately.
 async function handleDecideHours(request, env) {
   var oauth = readOauthConfig(env);
   if (!oauth || !env.CALENDAR_ID || !env.GOOGLE_SIGNIN_CLIENT_ID || !env.GOOGLE_SHEETS_ID) {
@@ -756,6 +760,13 @@ async function handleDecideHours(request, env) {
   var targetRow = batch.byTitle[targetTitle][rowIndex];
   if (targetRow[6] !== 'pending') {
     return noStore(json({ error: 'That submission was already decided.' }, 409));
+  }
+
+  // No self-approval, even for an organizer or the event's own leader —
+  // the tab title is who the submission belongs to (see buildTabTitle).
+  var submitter = parseTabTitle(targetTitle);
+  if (submitter && submitter.email === identity.email) {
+    return noStore(json({ error: "You can't decide your own submission." }, 403));
   }
 
   if (!isOrganizer) {
