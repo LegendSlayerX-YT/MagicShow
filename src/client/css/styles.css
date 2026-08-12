@@ -383,7 +383,8 @@ footer {
 .contact__input::placeholder {
   color: rgba(245, 233, 224, 0.48);
 }
-.contact__input[type="date"] {
+.contact__input[type="date"],
+.contact__input[type="datetime-local"] {
   color-scheme: dark;
 }
 .contact__input:focus {
