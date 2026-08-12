@@ -146,7 +146,7 @@ async function handleCalendar(request, url, env) {
 
   var events = (data.body.items || [])
     .filter(function (event) { return event && event.status !== 'cancelled'; })
-    .map(function (event) { return trimEvent(event, viewerEmail, includeAttendees, isOrganizer); });
+    .map(function (event) { return trimEvent(event, viewerEmail, includeAttendees, isOrganizer, calendarId); });
 
   return json({
     timeZone: timeZone,
@@ -411,12 +411,16 @@ async function handleLeaders(request, env) {
   }
 
   // Leaders must be picked from the event's actual guest list — never let
-  // the request write an arbitrary email into the description.
+  // the request write an arbitrary email into the description. The Calendar
+  // ID's own account isn't a guest — see trimEvent — so it's excluded here
+  // too, the same way trimEvent keeps it out of attendeeDetails in the first
+  // place.
+  var calendarEmail = normalizeEmail(env.CALENDAR_ID);
   var attendees = Array.isArray(event.attendees) ? event.attendees : [];
   var attendeeEmails = {};
   attendees.forEach(function (attendee) {
     var email = normalizeEmail(attendee && attendee.email);
-    if (email) attendeeEmails[email] = true;
+    if (email && email !== calendarEmail) attendeeEmails[email] = true;
   });
   leaderEmails = leaderEmails.filter(function (email) { return attendeeEmails[email]; });
 
@@ -1013,7 +1017,16 @@ async function verifyGoogleIdToken(credential, expectedAudience) {
 
 // Only forward the fields the calendar page renders. Google returns
 // attendees, organizer emails, and conferencing links we don't want public.
-function trimEvent(event, viewerEmail, includeAttendees, isOrganizer) {
+function trimEvent(event, viewerEmail, includeAttendees, isOrganizer, calendarId) {
+  // The Calendar ID isn't a person, it's just whose calendar every event
+  // lives on — Google lists that account as an attendee (flagged
+  // `organizer: true`) on its own events, but it's never someone who
+  // "attended" or a candidate to lead one. Trimmed by comparing against
+  // CALENDAR_ID directly rather than trusting Google's `organizer` flag,
+  // which is a different concept from this app's own ORGANIZER_EMAILS
+  // (real people with approval power — see isOrganizerEmail).
+  var calendarEmail = normalizeEmail(calendarId);
+
   // Leader picks live as a JSON tail on the event description (see
   // splitDescription) so no extra Calendar field/permission is needed. The
   // visible part is all that ever reaches the browser as `description` —
@@ -1052,7 +1065,7 @@ function trimEvent(event, viewerEmail, includeAttendees, isOrganizer) {
   // into leads vs. everyone else, but never email addresses — only whatever
   // display name a guest set on their own RSVP. Declined and resource
   // (room/equipment) entries aren't people who are "attending", and neither
-  // is the organizer when Google also lists them as an attendee.
+  // is the Calendar ID's own account.
   if (includeAttendees) {
     var guests = Array.isArray(event.attendees) ? event.attendees : [];
     var leaderEmails = {};
@@ -1060,9 +1073,10 @@ function trimEvent(event, viewerEmail, includeAttendees, isOrganizer) {
     trimmed.leads = [];
     trimmed.volunteers = [];
     guests.forEach(function (attendee) {
-      if (!attendee || attendee.resource || attendee.organizer || attendee.responseStatus === 'declined') return;
-      var name = attendee.displayName || 'Guest';
+      if (!attendee || attendee.resource || attendee.responseStatus === 'declined') return;
       var email = normalizeEmail(attendee.email);
+      if (email && email === calendarEmail) return;
+      var name = attendee.displayName || 'Guest';
       (email && leaderEmails[email] ? trimmed.leads : trimmed.volunteers).push(name);
     });
   }
@@ -1073,7 +1087,8 @@ function trimEvent(event, viewerEmail, includeAttendees, isOrganizer) {
     var candidates = Array.isArray(event.attendees) ? event.attendees : [];
     trimmed.attendeeDetails = candidates
       .filter(function (attendee) {
-        return attendee && !attendee.resource && !attendee.organizer && attendee.responseStatus !== 'declined';
+        if (!attendee || attendee.resource || attendee.responseStatus === 'declined') return false;
+        return normalizeEmail(attendee.email) !== calendarEmail;
       })
       .map(function (attendee) {
         return { email: normalizeEmail(attendee.email), name: attendee.displayName || attendee.email || 'Guest' };
