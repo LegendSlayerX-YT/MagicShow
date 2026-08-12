@@ -817,6 +817,41 @@ footer {
   color: var(--cream-dim);
 }
 
+/* ---- Add Event (calendar page) ---- */
+.calendar-add-event {
+  margin-bottom: 22px;
+}
+
+.calendar-add-event:empty {
+  margin-bottom: 0;
+}
+
+.calendar-add-event__form {
+  margin: 16px 0 0;
+  width: 100%;
+  max-width: 640px;
+}
+
+.calendar-add-event__allday {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.calendar-add-event__allday input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--crimson-bright);
+}
+
+.calendar-add-event__when {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 16px;
+}
+
+.calendar-event__area { color: var(--crimson-bright); }
+
 /* ---- Recent past events — horizontal scroll row ---- */
 .calendar-past { padding-bottom: 80px; }
 .calendar-past__title {
@@ -1245,4 +1280,5 @@ footer {
   .calendar-panel { padding: 18px; }
   .calendar-day__header,
   .calendar-day__events { padding-left: 16px; padding-right: 16px; }
+  .calendar-add-event__when { grid-template-columns: 1fr; }
 }

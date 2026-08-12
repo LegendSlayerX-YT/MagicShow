@@ -36,6 +36,13 @@
    just their one tab instead of a filter over every row ever
    submitted.
 
+   /api/events is a third write path: it creates a new Calendar event
+   tagged with a functional Area. Who may use which Area — and who
+   counts as a top-level organizer, replacing the old ORGANIZER_EMAILS
+   var — comes from two more tabs in the same spreadsheet ("Areas",
+   "Org Chart"), read through org-chart.js. That same permission check
+   also gates volunteer-hours approval (see canDecideSubmission below).
+
    Config:
      vars    — CALENDAR_ID, CALENDAR_TIME_ZONE,
                YOUTUBE_PLAYLIST_ID, YOUTUBE_MAX_RESULTS,
@@ -52,6 +59,10 @@ import {
   sheetsGetSpreadsheetMeta, sheetsCreateVolunteerTab, sheetsGetTabRows,
   sheetsBatchGetTabRows, sheetsAppendRowToTab, sheetsUpdateTabRange
 } from './hours-sheet.js';
+import {
+  getOrgChart, isTopManager, canUseArea, listUsableAreas, listTopManagers,
+  areaHead, getManagerChain
+} from './org-chart.js';
 
 var CACHE_SECONDS = 300;
 var MAX_RANGE_DAYS = 92;
@@ -70,11 +81,12 @@ export default {
       if (url.pathname === '/api/leaders') return handleLeaders(request, env);
       if (url.pathname === '/api/hours') return handleSubmitHours(request, env);
       if (url.pathname === '/api/hours/decide') return handleDecideHours(request, env);
+      if (url.pathname === '/api/events') return handleCreateEvent(request, env);
       return json({ error: 'Method not allowed' }, 405, { Allow: url.pathname === '/api/hours' ? 'GET, HEAD, POST' : 'GET, HEAD' });
     }
 
     if (request.method !== 'GET' && request.method !== 'HEAD') {
-      var postOnlyPaths = ['/api/register', '/api/leaders', '/api/hours/decide'];
+      var postOnlyPaths = ['/api/register', '/api/leaders', '/api/hours/decide', '/api/events'];
       var allow = url.pathname === '/api/hours' ? 'GET, HEAD, POST' :
         postOnlyPaths.indexOf(url.pathname) !== -1 ? 'POST' : 'GET, HEAD';
       return json({ error: 'Method not allowed' }, 405, { Allow: allow });
@@ -83,9 +95,11 @@ export default {
     if (url.pathname === '/api/calendar') return handleCalendar(request, url, env);
     if (url.pathname === '/api/archives') return handleArchives(env);
     if (url.pathname === '/api/hours') return handleViewHours(request, env);
+    if (url.pathname === '/api/areas') return handleListAreas(request, env);
     if (url.pathname === '/api/register') return json({ error: 'Method not allowed' }, 405, { Allow: 'POST' });
     if (url.pathname === '/api/leaders') return json({ error: 'Method not allowed' }, 405, { Allow: 'POST' });
     if (url.pathname === '/api/hours/decide') return json({ error: 'Method not allowed' }, 405, { Allow: 'POST' });
+    if (url.pathname === '/api/events') return json({ error: 'Method not allowed' }, 405, { Allow: 'POST' });
 
     return notFound();
   }
@@ -133,10 +147,15 @@ async function handleCalendar(request, url, env) {
     if (!identity.error) viewerEmail = identity.email;
   }
 
-  // Organizers (see ORGANIZER_EMAILS) don't register as guests — they pick
-  // leaders from the guest list instead. isOrganizer is only ever derived
-  // from a verified viewerEmail above, never from anything the client claims.
-  var isOrganizer = !!viewerEmail && isOrganizerEmail(viewerEmail, env);
+  // Top-level managers (see org-chart.js — no Manager in the Org Chart tab)
+  // don't register as guests — they pick leaders from the guest list
+  // instead. isOrganizer is only ever derived from a verified viewerEmail
+  // above, never from anything the client claims.
+  var isOrganizer = false;
+  if (viewerEmail && env.GOOGLE_SHEETS_ID) {
+    var viewerChart = await getOrgChart(env, token.value);
+    if (!viewerChart.error) isOrganizer = isTopManager(viewerEmail, viewerChart);
+  }
 
   // Attendee names are only included when the caller asks for them — the
   // past-events slider needs them, but the default (future) request should
@@ -343,12 +362,12 @@ async function handleRegister(request, env) {
 
 /* ---------- leader picks ---------- */
 
-// Lets an organizer mark which registered guests are leading an event. Only
-// callable by an email in ORGANIZER_EMAILS — verified the same way as
-// /api/register, off a Google-signed credential the client can't forge.
+// Lets a top-level manager (see org-chart.js) mark which registered guests
+// are leading an event. Verified the same way as /api/register, off a
+// Google-signed credential the client can't forge.
 async function handleLeaders(request, env) {
   var oauth = readOauthConfig(env);
-  if (!oauth || !env.CALENDAR_ID || !env.GOOGLE_SIGNIN_CLIENT_ID) {
+  if (!oauth || !env.CALENDAR_ID || !env.GOOGLE_SIGNIN_CLIENT_ID || !env.GOOGLE_SHEETS_ID) {
     return noStore(json({ error: 'Not configured.' }, 503));
   }
 
@@ -385,7 +404,13 @@ async function handleLeaders(request, env) {
   }
   var identity = await verifyGoogleIdToken(credential, env.GOOGLE_SIGNIN_CLIENT_ID);
   if (identity.error) return noStore(json({ error: identity.error }, identity.status));
-  if (!isOrganizerEmail(identity.email, env)) {
+
+  var token = await getAccessToken(oauth);
+  if (token.error) return noStore(json({ error: token.error }, token.status));
+
+  var chart = await getOrgChart(env, token.value);
+  if (chart.error) return noStore(json({ error: chart.error }, chart.status));
+  if (!isTopManager(identity.email, chart)) {
     return noStore(json({ error: 'Not authorized.' }, 403));
   }
 
@@ -393,9 +418,6 @@ async function handleLeaders(request, env) {
   var leaderEmails = requested
     .map(function (email) { return typeof email === 'string' ? normalizeEmail(email) : ''; })
     .filter(Boolean);
-
-  var token = await getAccessToken(oauth);
-  if (token.error) return noStore(json({ error: token.error }, token.status));
 
   var path = 'https://www.googleapis.com/calendar/v3/calendars/' +
     encodeURIComponent(env.CALENDAR_ID) + '/events/' + encodeURIComponent(eventId);
@@ -424,8 +446,8 @@ async function handleLeaders(request, env) {
   });
   leaderEmails = leaderEmails.filter(function (email) { return attendeeEmails[email]; });
 
-  var visible = splitDescription(event.description || '').visible;
-  var payload = { description: buildDescription(visible, leaderEmails) };
+  var parsedDescription = splitDescription(event.description || '');
+  var payload = { description: buildDescription(parsedDescription.visible, leaderEmails, parsedDescription.area) };
 
   // No sendUpdates here — this only rewrites the description, and guests
   // shouldn't get an email every time an organizer adjusts the leader list.
@@ -565,6 +587,9 @@ async function handleViewHours(request, env) {
   var token = await getAccessToken(oauth);
   if (token.error) return noStore(json({ error: token.error }, token.status));
 
+  var chart = await getOrgChart(env, token.value);
+  if (chart.error) return noStore(json({ error: chart.error }, chart.status));
+
   var meta = await sheetsGetSpreadsheetMeta(env, token.value);
   if (meta.error) return noStore(json({ error: meta.error }, meta.status));
 
@@ -575,11 +600,12 @@ async function handleViewHours(request, env) {
     .map(function (title) { var parsed = parseTabTitle(title); return parsed ? { title: title, name: parsed.name, email: parsed.email } : null; })
     .filter(Boolean);
 
-  // Organizers verify everyone's pending submissions; everyone else only
-  // ever sees their own tab — an organizer's email is verified server-side
+  // Top-level managers (see org-chart.js) verify everyone's pending
+  // submissions their authority reaches; everyone else only ever sees their
+  // own tab — a viewer's place in the org chart is verified server-side
   // above, never claimed by the client (same pattern as isOrganizer on
   // /api/calendar).
-  if (isOrganizerEmail(identity.email, env)) {
+  if (isTopManager(identity.email, chart)) {
     // The list of volunteer names comes straight from the tab titles — no
     // row data needs to be read just to populate the person picker.
     var volunteers = volunteerTabs
@@ -598,12 +624,11 @@ async function handleViewHours(request, env) {
       var personTotal = personResult.rows.reduce(function (sum, row) {
         return row[6] === 'verified' ? sum + (Number(row[2]) || 0) : sum;
       }, 0);
-      var personOrganizerEmails = getOrganizerEmails(env);
-      var personLeaderCache = new Map();
+      var personEventCache = new Map();
       var personSubmissions = await Promise.all(personResult.rows.map(async function (row) {
         var submission = { id: row[0], submittedAt: row[1], hours: row[2], date: row[3], event: row[4], status: row[6] };
         if (row[6] === 'pending') {
-          submission.approvers = await resolveApprovers(env, token.value, row[5] || '', personTab.email, personOrganizerEmails, personLeaderCache);
+          submission.approvers = await resolveApproverNames(env, token.value, row[5] || '', personTab.email, chart, personEventCache);
         } else {
           var decider = row[7] ? parseDecider(row[7]) : null;
           if (decider) submission.decidedBy = decider.name;
@@ -627,26 +652,20 @@ async function handleViewHours(request, env) {
     var batch = await sheetsBatchGetTabRows(env, token.value, volunteerTabs.map(function (v) { return v.title; }));
     if (batch.error) return noStore(json({ error: batch.error }, batch.status));
 
-    var pending = [];
-    volunteerTabs.forEach(function (v) {
-      if (v.email === identity.email) return; // no self-approval — see handleDecideHours
-      (batch.byTitle[v.title] || []).forEach(function (row) {
-        if (row[6] !== 'pending') return;
-        pending.push({ id: row[0], submittedAt: row[1], email: v.email, name: v.name || v.email, hours: row[2], date: row[3], event: row[4] });
-      });
-    });
-    pending.sort(function (a, b) { return Date.parse(a.submittedAt) - Date.parse(b.submittedAt); });
+    var pending = await buildDecidableQueue(env, token.value, volunteerTabs, batch, identity.email, chart, new Map());
 
     return noStore(json({ isOrganizer: true, pending: pending, volunteers: volunteers }, 200));
   }
 
-  // Not an organizer, but might still lead one or more events — leaders can
-  // approve hours submitted against the events they lead (see handleLeaders
-  // for how leader picks are stored). This costs one extra Calendar list
-  // call for every non-organizer view; acceptable for a small club site.
+  // Not a top-level manager, but might still lead one or more events, or be
+  // an Area's Head (or report up to one) — either grants the same
+  // decide-scoped queue below, just naturally narrower (see
+  // canDecideSubmission). This costs one extra Calendar list call for every
+  // non-top-manager view; acceptable for a small club site.
   var leaderLookup = await fetchLeaderEventIds(env, token.value, identity.email);
   var leaderEventIds = leaderLookup.error ? {} : leaderLookup.ids;
-  var isLeader = Object.keys(leaderEventIds).length > 0;
+  var manageableAreas = listUsableAreas(identity.email, chart);
+  var hasDecideAuthority = Object.keys(leaderEventIds).length > 0 || manageableAreas.length > 0;
 
   var ownTab = findVolunteerTab(meta.titles, identity.email);
   var ownResult = ownTab ? await sheetsGetTabRows(env, token.value, ownTab) : { rows: [] };
@@ -655,12 +674,11 @@ async function handleViewHours(request, env) {
   var totalHours = ownResult.rows.reduce(function (sum, row) {
     return row[6] === 'verified' ? sum + (Number(row[2]) || 0) : sum;
   }, 0);
-  var ownOrganizerEmails = getOrganizerEmails(env);
-  var ownLeaderCache = new Map();
+  var ownEventCache = new Map();
   var submissions = await Promise.all(ownResult.rows.map(async function (row) {
     var submission = { id: row[0], submittedAt: row[1], hours: row[2], date: row[3], event: row[4], eventId: row[5] || '', status: row[6] };
     if (row[6] === 'pending') {
-      submission.approvers = await resolveApprovers(env, token.value, row[5] || '', identity.email, ownOrganizerEmails, ownLeaderCache);
+      submission.approvers = await resolveApproverNames(env, token.value, row[5] || '', identity.email, chart, ownEventCache);
     } else {
       var decider = row[7] ? parseDecider(row[7]) : null;
       if (decider) submission.decidedBy = decider.name;
@@ -669,7 +687,7 @@ async function handleViewHours(request, env) {
   }));
   submissions.sort(function (a, b) { return Date.parse(b.submittedAt) - Date.parse(a.submittedAt); });
 
-  if (!isLeader) {
+  if (!hasDecideAuthority) {
     return noStore(json({
       isOrganizer: false,
       totalHours: Math.round(totalHours * 100) / 100,
@@ -677,22 +695,13 @@ async function handleViewHours(request, env) {
     }, 200));
   }
 
-  // Leader view of the pending queue — same batched read the organizer
-  // queue uses, just filtered down to submissions tied to an event this
-  // person leads (row[5] is the eventId column; see handleSubmitHours).
+  // Same batched read + filter the top-manager queue uses above — just
+  // naturally scoped down to the event(s) this person leads and/or the
+  // Area(s) they head or manage toward (see buildDecidableQueue).
   var leaderBatch = await sheetsBatchGetTabRows(env, token.value, volunteerTabs.map(function (v) { return v.title; }));
   if (leaderBatch.error) return noStore(json({ error: leaderBatch.error }, leaderBatch.status));
 
-  var leaderPending = [];
-  volunteerTabs.forEach(function (v) {
-    if (v.email === identity.email) return; // no self-approval — see handleDecideHours
-    (leaderBatch.byTitle[v.title] || []).forEach(function (row) {
-      if (row[6] !== 'pending') return;
-      if (!row[5] || !leaderEventIds[row[5]]) return;
-      leaderPending.push({ id: row[0], submittedAt: row[1], email: v.email, name: v.name || v.email, hours: row[2], date: row[3], event: row[4] });
-    });
-  });
-  leaderPending.sort(function (a, b) { return Date.parse(a.submittedAt) - Date.parse(b.submittedAt); });
+  var leaderPending = await buildDecidableQueue(env, token.value, volunteerTabs, leaderBatch, identity.email, chart, new Map());
 
   return noStore(json({
     isOrganizer: false,
@@ -703,14 +712,14 @@ async function handleViewHours(request, env) {
   }, 200));
 }
 
-// Lets an organizer, or the leader of the event a submission is tied to,
-// verify or deny one pending submission — except their own; a leader (or
-// organizer) can't approve/deny hours they submitted themselves, so a
-// second leader or the organizer has to sign off instead. Organizer status
-// is verified the same way as /api/leaders; a leader's authorization is
-// checked against the actual event the submission names (its eventId
-// column — see handleSubmitHours), not a cached list, so a leader pick
-// made after the submission still takes effect immediately.
+// Lets whoever canDecideSubmission authorizes — the event's leader, the
+// Area Head (or anyone that Head reports up to), or a top-level manager for
+// a submission with no event/Area — verify or deny one pending submission,
+// except their own; nobody can approve/deny hours they submitted themselves,
+// so someone else with standing has to sign off instead. Authorization is
+// checked against the actual event/Area the submission names (see
+// handleSubmitHours for the eventId column), not a cached list, so a leader
+// or Org Chart change takes effect on the very next decide.
 async function handleDecideHours(request, env) {
   var oauth = readOauthConfig(env);
   if (!oauth || !env.CALENDAR_ID || !env.GOOGLE_SIGNIN_CLIENT_ID || !env.GOOGLE_SHEETS_ID) {
@@ -745,7 +754,6 @@ async function handleDecideHours(request, env) {
   }
   var identity = await verifyGoogleIdToken(credential, env.GOOGLE_SIGNIN_CLIENT_ID);
   if (identity.error) return noStore(json({ error: identity.error }, identity.status));
-  var isOrganizer = isOrganizerEmail(identity.email, env);
 
   var id = typeof body.id === 'string' ? body.id.trim() : '';
   var decision = body.decision === 'verify' ? 'verified' : body.decision === 'deny' ? 'denied' : '';
@@ -755,6 +763,9 @@ async function handleDecideHours(request, env) {
 
   var token = await getAccessToken(oauth);
   if (token.error) return noStore(json({ error: token.error }, token.status));
+
+  var chart = await getOrgChart(env, token.value);
+  if (chart.error) return noStore(json({ error: chart.error }, chart.status));
 
   var meta = await sheetsGetSpreadsheetMeta(env, token.value);
   if (meta.error) return noStore(json({ error: meta.error }, meta.status));
@@ -789,20 +800,9 @@ async function handleDecideHours(request, env) {
     return noStore(json({ error: "You can't decide your own submission." }, 403));
   }
 
-  if (!isOrganizer) {
-    var eventId = targetRow[5];
-    var authorized = false;
-    if (eventId) {
-      var eventPath = 'https://www.googleapis.com/calendar/v3/calendars/' +
-        encodeURIComponent(env.CALENDAR_ID) + '/events/' + encodeURIComponent(eventId);
-      var eventResult = await calendarRequest('GET', eventPath, token.value, null, null);
-      if (!eventResult.error) {
-        authorized = splitDescription(eventResult.body.description || '').leaders.indexOf(identity.email) !== -1;
-      }
-    }
-    if (!authorized) {
-      return noStore(json({ error: 'Not authorized.' }, 403));
-    }
+  var authorized = await canDecideSubmission(env, token.value, targetRow, identity.email, chart, new Map());
+  if (!authorized) {
+    return noStore(json({ error: 'Not authorized.' }, 403));
   }
 
   var rowNumber = rowIndex + 2; // row 1 is the header; data starts at row 2
@@ -813,6 +813,147 @@ async function handleDecideHours(request, env) {
   if (updated.error) return noStore(json({ error: updated.error }, updated.status));
 
   return noStore(json({ decided: true, decision: decision }, 200));
+}
+
+/* ---------- event creation ---------- */
+
+var MAX_EVENT_TITLE = 200;
+var MAX_EVENT_LOCATION = 200;
+var MAX_EVENT_DESCRIPTION = 4000;
+
+// Lets whoever canUseArea authorizes for a given Area — its Head, or anyone
+// that Head reports up to (see org-chart.js) — create a new Calendar event
+// tagged with that Area. The tag rides in the same JSON tail as leader
+// picks (see buildDescription) so it needs no extra Calendar field.
+async function handleCreateEvent(request, env) {
+  var oauth = readOauthConfig(env);
+  if (!oauth || !env.CALENDAR_ID || !env.GOOGLE_SIGNIN_CLIENT_ID || !env.GOOGLE_SHEETS_ID) {
+    return noStore(json({ error: 'Event creation is not configured.' }, 503));
+  }
+
+  var contentType = request.headers.get('Content-Type') || '';
+  if (contentType.indexOf('application/json') === -1) {
+    return noStore(json({ error: 'Expected application/json.' }, 415));
+  }
+
+  var origin = request.headers.get('Origin');
+  if (origin && origin !== new URL(request.url).origin) {
+    return noStore(json({ error: 'Cross-origin requests are not allowed.' }, 403));
+  }
+
+  var ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+  if (rateLimited(ip)) {
+    return noStore(json({ error: 'Too many attempts. Try again in a minute.' }, 429, { 'Retry-After': '60' }));
+  }
+
+  var body;
+  try {
+    body = await request.json();
+  } catch (err) {
+    return noStore(json({ error: 'Invalid request body.' }, 400));
+  }
+
+  var credential = typeof body.credential === 'string' ? body.credential : '';
+  if (!credential) {
+    return noStore(json({ error: 'Sign in with Google to create an event.' }, 401));
+  }
+  var identity = await verifyGoogleIdToken(credential, env.GOOGLE_SIGNIN_CLIENT_ID);
+  if (identity.error) return noStore(json({ error: identity.error }, identity.status));
+
+  var token = await getAccessToken(oauth);
+  if (token.error) return noStore(json({ error: token.error }, token.status));
+
+  var chart = await getOrgChart(env, token.value);
+  if (chart.error) return noStore(json({ error: chart.error }, chart.status));
+
+  var area = typeof body.area === 'string' ? body.area.trim() : '';
+  if (!area || !canUseArea(identity.email, area, chart)) {
+    return noStore(json({ error: 'Pick an Area you can create events for.' }, 403));
+  }
+
+  var title = typeof body.title === 'string' ? body.title.trim() : '';
+  if (!title || title.length > MAX_EVENT_TITLE) {
+    return noStore(json({ error: 'Enter a title (up to ' + MAX_EVENT_TITLE + ' characters).' }, 400));
+  }
+
+  var location = typeof body.location === 'string' ? body.location.trim() : '';
+  if (location.length > MAX_EVENT_LOCATION) {
+    return noStore(json({ error: 'Location is too long.' }, 400));
+  }
+
+  var description = typeof body.description === 'string' ? body.description.trim() : '';
+  if (description.length > MAX_EVENT_DESCRIPTION) {
+    return noStore(json({ error: 'Description is too long.' }, 400));
+  }
+
+  var start, end;
+  if (body.allDay === true) {
+    var startDate = typeof body.startDate === 'string' ? body.startDate.trim() : '';
+    var endDate = typeof body.endDate === 'string' ? body.endDate.trim() : '';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+      return noStore(json({ error: 'Enter valid start/end dates.' }, 400));
+    }
+    // Calendar's all-day end.date is exclusive — the form collects the last
+    // inclusive day, so a one-day event needs endDate pushed one day later.
+    var endExclusive = new Date(endDate + 'T00:00:00Z');
+    endExclusive.setUTCDate(endExclusive.getUTCDate() + 1);
+    if (Date.parse(startDate + 'T00:00:00Z') > endExclusive.getTime()) {
+      return noStore(json({ error: 'End date must be on or after the start date.' }, 400));
+    }
+    start = { date: startDate };
+    end = { date: endExclusive.toISOString().slice(0, 10) };
+  } else {
+    var startDateTime = typeof body.start === 'string' ? body.start.trim() : '';
+    var endDateTime = typeof body.end === 'string' ? body.end.trim() : '';
+    var startMs = Date.parse(startDateTime);
+    var endMs = Date.parse(endDateTime);
+    if (!startDateTime || !endDateTime || Number.isNaN(startMs) || Number.isNaN(endMs) || endMs <= startMs) {
+      return noStore(json({ error: 'Enter a valid start and end time.' }, 400));
+    }
+    var timeZone = env.CALENDAR_TIME_ZONE || 'UTC';
+    start = { dateTime: new Date(startMs).toISOString(), timeZone: timeZone };
+    end = { dateTime: new Date(endMs).toISOString(), timeZone: timeZone };
+  }
+
+  var payload = {
+    summary: title,
+    location: location,
+    description: buildDescription(description, [], area),
+    start: start,
+    end: end
+  };
+
+  var path = 'https://www.googleapis.com/calendar/v3/calendars/' + encodeURIComponent(env.CALENDAR_ID) + '/events';
+  var created = await calendarRequest('POST', path, token.value, payload, null);
+  if (created.error) return noStore(json({ error: created.error }, created.status));
+
+  return noStore(json({ created: true, eventId: created.body.id }, 200));
+}
+
+/* ---------- areas ---------- */
+
+// Which Areas the signed-in visitor may create/lead events for — the same
+// relation canDecideSubmission checks for hours approval (see org-chart.js).
+async function handleListAreas(request, env) {
+  var oauth = readOauthConfig(env);
+  if (!oauth || !env.GOOGLE_SIGNIN_CLIENT_ID || !env.GOOGLE_SHEETS_ID) {
+    return noStore(json({ error: 'Not configured.' }, 503));
+  }
+
+  var authHeader = request.headers.get('Authorization') || '';
+  if (authHeader.indexOf('Bearer ') !== 0) {
+    return noStore(json({ error: 'Sign in with Google first.' }, 401));
+  }
+  var identity = await verifyGoogleIdToken(authHeader.slice(7), env.GOOGLE_SIGNIN_CLIENT_ID);
+  if (identity.error) return noStore(json({ error: identity.error }, identity.status));
+
+  var token = await getAccessToken(oauth);
+  if (token.error) return noStore(json({ error: token.error }, token.status));
+
+  var chart = await getOrgChart(env, token.value);
+  if (chart.error) return noStore(json({ error: chart.error }, chart.status));
+
+  return noStore(json({ areas: listUsableAreas(identity.email, chart) }, 200));
 }
 
 // Only events the Calendar page actually shows can be registered for, so a
@@ -1023,15 +1164,15 @@ function trimEvent(event, viewerEmail, includeAttendees, isOrganizer, calendarId
   // `organizer: true`) on its own events, but it's never someone who
   // "attended" or a candidate to lead one. Trimmed by comparing against
   // CALENDAR_ID directly rather than trusting Google's `organizer` flag,
-  // which is a different concept from this app's own ORGANIZER_EMAILS
-  // (real people with approval power — see isOrganizerEmail).
+  // which is a different concept from this app's own top-level managers
+  // (real people with approval power — see isTopManager in org-chart.js).
   var calendarEmail = normalizeEmail(calendarId);
 
-  // Leader picks live as a JSON tail on the event description (see
-  // splitDescription) so no extra Calendar field/permission is needed. The
-  // visible part is all that ever reaches the browser as `description` —
-  // for every viewer, organizer included — so the tail never shows up in
-  // page content or a fetch() response body.
+  // Leader picks and the Area tag both live as a JSON tail on the event
+  // description (see splitDescription) so no extra Calendar field/
+  // permission is needed. The visible part is all that ever reaches the
+  // browser as `description` — for every viewer, organizer included — so
+  // the tail never shows up in page content or a fetch() response body.
   var parsedDescription = splitDescription(event.description || '');
   var trimmed = {
     // The page sends this back to /api/register. Not a secret — Google
@@ -1040,6 +1181,9 @@ function trimEvent(event, viewerEmail, includeAttendees, isOrganizer, calendarId
     summary: event.summary || '',
     location: event.location || '',
     description: parsedDescription.visible,
+    // The functional Area this event was created for (see handleCreateEvent)
+    // — blank for events created before this feature existed.
+    area: parsedDescription.area || '',
     start: {},
     end: {}
   };
@@ -1099,38 +1243,45 @@ function trimEvent(event, viewerEmail, includeAttendees, isOrganizer, calendarId
   return trimmed;
 }
 
-/* ---------- leader picks (stored in the event description) ----------
+/* ---------- leader picks + Area tag (stored in the event description) ----------
 
-   Organizers mark which registered guests are leading a given event. That
-   pick has no field of its own on a Calendar event, so it's kept as a JSON
-   line appended after the human-written description — plain visible text,
-   not hidden markup, so it survives an organizer editing the description in
-   the Google Calendar UI (rather than risk the UI's rich-text editor
-   silently stripping something it treats as inert markup on save) and so
-   the pick is visible/auditable directly on the event if anyone goes
-   looking. trimEvent always strips it back out before `description` reaches
-   any client on this site — the public gets it back out as the leads/
-   volunteers split, organizers additionally get the raw parsed `leaders`
-   field — so it never shows up in this site's own pages or responses.
+   A top-level manager marks which registered guests are leading a given
+   event, and whoever creates an event tags it with a functional Area (see
+   handleCreateEvent). Neither has a field of its own on a Calendar event, so
+   both ride together as one JSON line appended after the human-written
+   description — plain visible text, not hidden markup, so it survives
+   someone editing the description in the Google Calendar UI (rather than
+   risk the UI's rich-text editor silently stripping something it treats as
+   inert markup on save) and so the pick is visible/auditable directly on the
+   event if anyone goes looking. trimEvent always strips it back out before
+   `description` reaches any client on this site — the public gets it back
+   out as the leads/volunteers split and the `area` field, organizers
+   additionally get the raw parsed `leaders` field — so it never shows up in
+   this site's own pages or responses.
+
+   The JSON key stays `emails` (not renamed to match the marker text) purely
+   for backward compatibility — events tagged before the Area feature existed
+   already carry this exact marker string with that key.
    ----------------------------------------------------------------- */
 
 var LEADER_MARKER = '\n\nLeaders (auto-managed by the website, do not edit): ';
 
 function splitDescription(raw) {
   var idx = raw.lastIndexOf(LEADER_MARKER);
-  if (idx === -1) return { visible: raw, leaders: [] };
+  if (idx === -1) return { visible: raw, leaders: [], area: '' };
 
   var tail = raw.slice(idx + LEADER_MARKER.length).trim();
   var parsed;
   try {
     parsed = JSON.parse(tail);
   } catch (err) {
-    return { visible: raw, leaders: [] };
+    return { visible: raw, leaders: [], area: '' };
   }
 
   var emails = Array.isArray(parsed && parsed.emails) ?
     parsed.emails.filter(function (email) { return typeof email === 'string'; }) : [];
-  return { visible: raw.slice(0, idx), leaders: emails };
+  var area = typeof (parsed && parsed.area) === 'string' ? parsed.area.trim() : '';
+  return { visible: raw.slice(0, idx), leaders: emails, area: area };
 }
 
 // The set of event ids a visitor is a leader of, used to build their leader
@@ -1166,58 +1317,107 @@ async function fetchLeaderEventIds(env, accessToken, email) {
   return { ids: ids };
 }
 
-function buildDescription(visible, leaderEmails) {
+function buildDescription(visible, leaderEmails, area) {
   var base = visible.replace(/\s+$/, '');
-  if (!leaderEmails.length) return base;
-  return base + LEADER_MARKER + JSON.stringify({ emails: leaderEmails });
+  var payload = {};
+  if (leaderEmails && leaderEmails.length) payload.emails = leaderEmails;
+  if (area) payload.area = area;
+  if (!payload.emails && !payload.area) return base;
+  return base + LEADER_MARKER + JSON.stringify(payload);
 }
 
-function getOrganizerEmails(env) {
-  return (env.ORGANIZER_EMAILS || '').split(',')
-    .map(function (raw) { return normalizeEmail(raw); })
-    .filter(Boolean);
-}
+// Fetches one event's leaders/Area/attendee names, cached per-call-chain
+// (several pending rows, or several approver lookups, often share the same
+// event) — shared by canDecideSubmission and resolveApproverNames below.
+async function getEventInfo(env, accessToken, eventId, cache) {
+  if (cache.has(eventId)) return cache.get(eventId);
 
-function isOrganizerEmail(email, env) {
-  return getOrganizerEmails(env).indexOf(email) !== -1;
-}
+  var eventPath = 'https://www.googleapis.com/calendar/v3/calendars/' +
+    encodeURIComponent(env.CALENDAR_ID) + '/events/' + encodeURIComponent(eventId);
+  var result = await calendarRequest('GET', eventPath, accessToken, null, null);
 
-// Who could still verify/deny a pending submission: any organizer, plus
-// whoever leads the event it's tied to (if any) — matches the authorization
-// check in handleDecideHours. Only used for the "eligible to approve"
-// tooltip, so a resolution miss (event fetch fails, submitter has no
-// eventId) just means a shorter list, never an error. `eventLeaderCache`
-// memoizes the Calendar fetch per eventId since several pending rows often
-// share the same event.
-async function resolveApprovers(env, accessToken, eventId, excludeEmail, organizerEmails, eventLeaderCache) {
-  var names = organizerEmails.filter(function (email) { return email !== excludeEmail; });
-
-  if (eventId) {
-    if (!eventLeaderCache.has(eventId)) {
-      var eventPath = 'https://www.googleapis.com/calendar/v3/calendars/' +
-        encodeURIComponent(env.CALENDAR_ID) + '/events/' + encodeURIComponent(eventId);
-      var eventResult = await calendarRequest('GET', eventPath, accessToken, null, null);
-      if (eventResult.error) {
-        eventLeaderCache.set(eventId, []);
-      } else {
-        var leaderEmails = splitDescription(eventResult.body.description || '').leaders;
-        var attendees = Array.isArray(eventResult.body.attendees) ? eventResult.body.attendees : [];
-        var nameByEmail = {};
-        attendees.forEach(function (a) {
-          var email = normalizeEmail(a && a.email);
-          if (email) nameByEmail[email] = a.displayName || email;
-        });
-        eventLeaderCache.set(eventId, leaderEmails.map(function (email) {
-          return { email: email, name: nameByEmail[email] || email };
-        }));
-      }
-    }
-    eventLeaderCache.get(eventId).forEach(function (leader) {
-      if (leader.email !== excludeEmail && names.indexOf(leader.name) === -1) names.push(leader.name);
+  var info;
+  if (result.error) {
+    info = { leaders: [], area: '', nameByEmail: {} };
+  } else {
+    var parsed = splitDescription(result.body.description || '');
+    var nameByEmail = {};
+    (Array.isArray(result.body.attendees) ? result.body.attendees : []).forEach(function (a) {
+      var email = normalizeEmail(a && a.email);
+      if (email) nameByEmail[email] = a.displayName || email;
     });
+    info = { leaders: parsed.leaders, area: parsed.area, nameByEmail: nameByEmail };
   }
 
-  return names;
+  cache.set(eventId, info);
+  return info;
+}
+
+// Who can decide a pending submission: whoever leads the event it's tied to,
+// or the Head of the event's Area (or anyone that Head reports up to — see
+// canUseArea in org-chart.js). A submission with no event, or whose event
+// has no Area tagged (e.g. one created before this feature existed), can
+// only be decided by a top-level manager — see isTopManager.
+async function canDecideSubmission(env, accessToken, row, viewerEmail, chart, cache) {
+  var eventId = row[5];
+  if (!eventId) return isTopManager(viewerEmail, chart);
+  var info = await getEventInfo(env, accessToken, eventId, cache);
+  if (info.leaders.indexOf(viewerEmail) !== -1) return true;
+  if (!info.area) return isTopManager(viewerEmail, chart);
+  return canUseArea(viewerEmail, info.area, chart);
+}
+
+// Every pending row across every volunteer tab (except the viewer's own)
+// that canDecideSubmission authorizes this viewer to decide — the one queue
+// both a top-level manager and an Area-scoped manager/leader see in
+// handleViewHours, just naturally filtered to what each is allowed to act on.
+async function buildDecidableQueue(env, accessToken, volunteerTabs, batch, viewerEmail, chart, cache) {
+  var pending = [];
+  for (var vi = 0; vi < volunteerTabs.length; vi++) {
+    var v = volunteerTabs[vi];
+    if (v.email === viewerEmail) continue; // no self-approval — see handleDecideHours
+    var rows = batch.byTitle[v.title] || [];
+    for (var ri = 0; ri < rows.length; ri++) {
+      var row = rows[ri];
+      if (row[6] !== 'pending') continue;
+      if (!(await canDecideSubmission(env, accessToken, row, viewerEmail, chart, cache))) continue;
+      pending.push({ id: row[0], submittedAt: row[1], email: v.email, name: v.name || v.email, hours: row[2], date: row[3], event: row[4] });
+    }
+  }
+  pending.sort(function (a, b) { return Date.parse(a.submittedAt) - Date.parse(b.submittedAt); });
+  return pending;
+}
+
+// Who could still verify/deny a pending submission, for the "eligible to
+// approve" tooltip (see hours-common.js statusTooltip) — mirrors
+// canDecideSubmission's rule but returns display names/emails instead of a
+// yes/no. Only ever used for that tooltip, so a resolution miss (event fetch
+// fails) just means a shorter list, never an error.
+async function resolveApproverNames(env, accessToken, eventId, excludeEmail, chart, cache) {
+  var addedEmails = {};
+  var labels = [];
+  function add(email, nameByEmail) {
+    email = normalizeEmail(email);
+    if (!email || email === excludeEmail || addedEmails[email]) return;
+    addedEmails[email] = true;
+    labels.push((nameByEmail && nameByEmail[email]) || email);
+  }
+
+  if (!eventId) {
+    listTopManagers(chart).forEach(function (email) { add(email); });
+    return labels;
+  }
+
+  var info = await getEventInfo(env, accessToken, eventId, cache);
+  info.leaders.forEach(function (email) { add(email, info.nameByEmail); });
+  if (info.area) {
+    var head = areaHead(info.area, chart);
+    add(head, info.nameByEmail);
+    getManagerChain(head, chart).forEach(function (email) { add(email, info.nameByEmail); });
+  } else {
+    listTopManagers(chart).forEach(function (email) { add(email); });
+  }
+  return labels;
 }
 
 // timeMin/timeMax come from the browser so the list lines up with the

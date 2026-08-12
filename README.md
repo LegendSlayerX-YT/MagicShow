@@ -6,10 +6,10 @@ API calls so the API keys never reach the browser.
 
 - **Home** (`index.html`) — welcome page with an animated "magic" background (drifting card suits + sparkles) and a contact form.
 - **About Us** (`about.html`) — club member cards (currently Henry Chen).
-- **Calendar** (`calendar.html`) — public Google Calendar events fetched and rendered in a themed list for the rolling window from 3 days ago through 7 days ahead. Upcoming events have a **Register** button that adds the visitor's email to the event's guest list.
+- **Calendar** (`calendar.html`) — public Google Calendar events fetched and rendered in a themed list for the rolling window from 3 days ago through 7 days ahead. Upcoming events have a **Register** button that adds the visitor's email to the event's guest list. Signed-in visitors with standing in the [org chart](#org-chart) also get an **Add Event** button, for creating a new event tagged with a functional Area.
 - **Archives** (`archives.html`) — previous shows, pulled **live** from your public YouTube playlist, with a local fallback list.
 - **Volunteer Hour Submission** (`hours.html`) — signed-in visitors log hours (amount, date, and optionally which event, or a free-text title when no event applies) to a Google Sheet, and see their own submission history plus a running total of verified hours.
-- **Volunteer Hour Approval** (`hours-approval.html`) — organizers see a pending queue with Verify/Deny buttons, plus a volunteer picker to look up any submitter's total verified hours and full submission history. The dropdown under the account avatar links to whichever of these two pages applies to the signed-in visitor.
+- **Volunteer Hour Approval** (`hours-approval.html`) — whoever the [org chart](#org-chart) authorizes for a given submission (the event's leader, its Area's Head or manager chain, or a top-level organizer for hours with no event attached) sees a pending queue with Verify/Deny buttons; top-level organizers additionally get a volunteer picker to look up any submitter's total verified hours and full submission history. The dropdown under the account avatar links to whichever of these two pages applies to the signed-in visitor.
 
 ---
 
@@ -20,22 +20,26 @@ MagicShow/
 ├── wrangler.jsonc          # Cloudflare Workers config (assets + Worker + vars)
 ├── .dev.vars.example       # Template for local API keys — copy to .dev.vars
 ├── scripts/
-│   ├── google-oauth.mjs           # One-time consent → refresh token (calendar + sheets)
-│   ├── create-hours-sheet.mjs     # One-time: creates the volunteer-hours Google Sheet
-│   └── migrate-hours-to-tabs.mjs  # One-time: splits old shared rows into per-volunteer tabs
+│   ├── google-oauth.mjs             # One-time consent → refresh token (calendar + sheets)
+│   ├── create-hours-sheet.mjs       # One-time: creates the volunteer-hours Google Sheet
+│   ├── create-org-chart-tabs.mjs    # One-time: creates the Areas + Org Chart tabs
+│   └── migrate-hours-to-tabs.mjs    # One-time: splits old shared rows into per-volunteer tabs
 └── src/
     ├── worker/
-    │   └── index.js        # /api/* relay; holds the Google API keys
+    │   ├── index.js         # /api/* relay; holds the Google API keys
+    │   ├── org-chart.js     # Areas + Org Chart tabs → manager-chain permission checks
+    │   ├── hours-sheet.js   # Volunteer-hours Sheets helpers
+    │   └── util.js          # Shared helpers
     └── client/             # The static website
         ├── index.html      # Home
         ├── about.html      # About Us
-        ├── calendar.html   # Calendar (public Google Calendar events)
+        ├── calendar.html   # Calendar (public Google Calendar events + Add Event)
         ├── archives.html   # Archives (videos)
         ├── hours.html          # Volunteer Hour Submission (log hours)
-        ├── hours-approval.html # Volunteer Hour Approval (organizer verify queue)
+        ├── hours-approval.html # Volunteer Hour Approval (verify queue)
         ├── css/styles.css      # All styles
         └── js/
-            ├── calendar.js      # Calls /api/calendar + renders the rolling date range
+            ├── calendar.js      # Calls /api/calendar(+/events,/areas) + renders the rolling date range
             ├── main.js          # Nav toggle + footer year
             ├── magic-bg.js      # Home animated background
             ├── config.js        # ← EDIT THIS: video overrides + fallback list
@@ -53,13 +57,15 @@ the pages call their own origin and the Worker adds the key server-side:
 
 | Endpoint | Returns |
 | --- | --- |
-| `GET /api/calendar?timeMin=…&timeMax=…` | `{ timeZone, events[] }` — public events, trimmed to the fields the page renders |
+| `GET /api/calendar?timeMin=…&timeMax=…` | `{ timeZone, events[] }` — public events, trimmed to the fields the page renders (each event includes its tagged `area`, if any) |
 | `GET /api/archives` | `{ videos[] }` — playlist items, filtered and newest-first |
 | `POST /api/register` | `{ registered, alreadyRegistered }` — adds one email to one event's guest list |
-| `GET /api/hours` | Requires `Authorization: Bearer <Google ID token>`. Organizers get `{ isOrganizer: true, pending[], volunteers[] }`; everyone else gets `{ isOrganizer: false, totalHours, submissions[] }` for just their own rows |
-| `GET /api/hours?person=<email>` | Organizer-only. `{ isOrganizer: true, volunteers[], person, totalHours, submissions[] }` — one volunteer's full history and verified-hours total, for the organizer's person picker |
+| `GET /api/areas` | Requires `Authorization: Bearer <Google ID token>`. `{ areas[] }` — the functional Areas the signed-in visitor may create/lead events for (see [Org chart](#org-chart)) |
+| `POST /api/events` | Requires a matching Area authorization (see [Org chart](#org-chart)). `{ created: true, eventId }` — creates a new Calendar event tagged with the given Area |
+| `GET /api/hours` | Requires `Authorization: Bearer <Google ID token>`. Top-level organizers get `{ isOrganizer: true, pending[], volunteers[] }`; anyone with narrower standing (an event leader, or an Area's Head/manager chain) gets `{ isOrganizer: false, isLeader: true, totalHours, submissions[], pending[] }` scoped to what they may decide; everyone else gets `{ isOrganizer: false, totalHours, submissions[] }` for just their own rows |
+| `GET /api/hours?person=<email>` | Top-level-organizer-only. `{ isOrganizer: true, volunteers[], person, totalHours, submissions[] }` — one volunteer's full history and verified-hours total, for the organizer's person picker |
 | `POST /api/hours` | `{ submitted: true }` — appends one volunteer-hours row (`pending`) to the Google Sheet |
-| `POST /api/hours/decide` | Organizer-only. `{ decided: true, decision }` — marks one row `verified` or `denied` |
+| `POST /api/hours/decide` | Requires standing over that submission (see [Org chart](#org-chart)). `{ decided: true, decision }` — marks one row `verified` or `denied` |
 
 The Worker validates the requested date range, caches upstream responses at the
 edge for 5 minutes, and never forwards Google's raw error bodies (they can echo
@@ -79,8 +85,7 @@ Non-secret settings live in `wrangler.jsonc` under `vars`:
 | `API_REFERRER` | Sent as the `Referer` on Google calls — see below |
 | `CALENDAR_SEND_UPDATES` | `all` emails the guest their invitation; `none` adds them silently |
 | `GOOGLE_SIGNIN_CLIENT_ID` | OAuth Client ID for Sign in with Google — see [below](#sign-in-with-google) |
-| `ORGANIZER_EMAILS` | Comma-separated emails treated as organizers — no Register button, gets leader-picking + the Volunteer Hours verify queue instead |
-| `GOOGLE_SHEETS_ID` | Spreadsheet ID backing Volunteer Hours — see [below](#volunteer-hours) |
+| `GOOGLE_SHEETS_ID` | Spreadsheet ID backing Volunteer Hours **and** the [org chart](#org-chart) (`Areas` + `Org Chart` tabs) |
 
 Calendar reads authenticate as the calendar's owner over OAuth — see
 "Event registration" below for how that credential is set up; it backs both
@@ -103,6 +108,50 @@ Now that the key is server-side, referrer restriction no longer protects
 anything. The cleaner setup is to switch the key's application restriction to
 **None**, keep the **API restriction** (YouTube Data API v3), and delete
 `API_REFERRER` from `wrangler.jsonc`.
+
+---
+
+## Org chart
+
+Two tabs in the same spreadsheet as Volunteer Hours (`GOOGLE_SHEETS_ID`) hold
+the club's people hierarchy, read by `src/worker/org-chart.js`. This is the
+sole source of who may create a Calendar event for a given functional Area,
+who may approve volunteer hours tied to it, and who counts as a top-level
+organizer — it replaced the old hardcoded `ORGANIZER_EMAILS` var.
+
+| Tab | Columns | Meaning |
+| --- | --- | --- |
+| `Areas` | `Area`, `Head` | One row per functional area (e.g. "Cooking", "Environment", "Science") — `Head` is that area's leader's email. |
+| `Org Chart` | `Employee`, `Manager` | One row per person — `Manager` is blank for a top-level organizer. More than one top-level organizer is fine (e.g. one per Area tree, or a shared handful for the whole club). |
+
+**A person may act for an Area** — create events tagged with it (see "Event
+registration" below) and approve volunteer hours tied to it (see "Volunteer
+hours" below) — **if they're that Area's Head, or if the Head reports up to
+them**, directly or transitively, per `Org Chart`. Someone listed in `Org
+Chart` with a blank `Manager` is a **top-level organizer**: no Register
+button on the Calendar page (they get the leader-picking control instead),
+the full volunteer picker on the Approval page, and the sole approver for
+volunteer hours that have no Calendar event attached (the free-text case —
+there's no Area to check standing against).
+
+### One-time setup
+
+```bash
+node scripts/create-org-chart-tabs.mjs
+```
+
+Creates the `Areas` and `Org Chart` tabs (with header rows) in the
+spreadsheet at `GOOGLE_SHEETS_ID` — safe to re-run, a tab that already exists
+is left untouched. Then fill in the rows by hand directly in Google Sheets:
+
+- `Areas` — one row per functional area, `Head` is that person's email.
+- `Org Chart` — one row per person, `Manager` is their manager's email,
+  blank for a top-level organizer.
+
+Both tabs are read by every `/api/*` endpoint that checks authorization
+(`getOrgChart` in `org-chart.js`), cached in the Worker for a minute so one
+page load's several calls don't each re-read both tabs from Sheets. A change
+to either tab takes effect within that minute, no redeploy needed.
 
 ---
 
@@ -212,6 +261,20 @@ can be used for:
 If Google ever rejects the refresh token (`invalid_grant` in `wrangler tail`),
 re-run step 3 and set the secret again.
 
+### Creating events (Add Event)
+
+Signed-in visitors with standing over at least one Area (see
+[Org chart](#org-chart)) get an **Add Event** button above the Calendar list.
+The form asks for a Title, an Area (only the ones that visitor may use), an
+optional Location/Description, and either a timed start/end or an all-day
+date range. Submitting POSTs to `/api/events`, which re-checks that Area
+authorization server-side — never trusts anything the client claims — before
+creating the event on the configured `CALENDAR_ID` and tagging it with the
+picked Area (stored the same way leader picks are — see "Leader picks" tail
+format in `src/worker/index.js`). Newly created events start with no
+leaders; an organizer picks those afterward from the guest list the same way
+as any other event, once people have registered.
+
 ---
 
 ## Volunteer hours
@@ -221,24 +284,36 @@ visitor log hours — amount, date, and either an event picked from a dropdown
 of real Calendar events (so names can't be typo'd or made up) or, when no
 event applies, a free-text title. There's no database in this project, so
 submissions are appended as rows to a **Google Sheet**, the same way Calendar
-is the datastore for events. Organizers (see `ORGANIZER_EMAILS`) get a
-separate **Volunteer Hour Approval** page (`hours-approval.html`) instead: a
-pending queue with **Verify**/**Deny** buttons. A verified row counts toward
-that volunteer's running total, shown back to them on the Submission page.
-The dropdown under the account avatar always links to whichever page applies
-to the signed-in visitor.
+is the datastore for events. Anyone with decide authority over at least one
+pending submission (see below) gets a separate **Volunteer Hour Approval**
+page (`hours-approval.html`) instead: a pending queue with
+**Verify**/**Deny** buttons, scoped to just the submissions they're allowed
+to decide. A verified row counts toward that volunteer's running total,
+shown back to them on the Submission page. The dropdown under the account
+avatar always links to whichever page applies to the signed-in visitor.
 
-**Event leaders** — the guests an organizer marks as leading a given event
-(see "Event registration" → leader picks above) — get that same Approval
-queue, scoped to submissions tied to the event(s) they lead: a leader's
-authorization is checked against the actual Calendar event a submission
-names (its `eventId` column below), not a separately-maintained list, so
-picking or un-picking a leader takes effect on the next decide immediately.
-A leader who isn't also an organizer still lands on the Submission page to
-log their own hours — it just shows a link over to the Approval page for the
-event(s) they lead. Submissions with no picked event (the free-text case)
-can only be decided by an organizer, since there's no event to check
-leadership against.
+**Who can decide a pending submission** (`canDecideSubmission` in
+`src/worker/index.js`) — checked fresh on every decide, never against a
+cached list:
+
+- **The event's leader** — the guests a top-level organizer marks as leading
+  a given event (see "Event registration" → leader picks above): authorized
+  for submissions tied to that event, regardless of its Area.
+- **The event's Area Head, or anyone that Head reports up to** — per the
+  [org chart](#org-chart), same relation that authorizes creating the event
+  in the first place.
+- **A top-level organizer** — the sole fallback for a submission with no
+  event attached (the free-text case, with no Area to check standing
+  against) or whose event has no Area tagged (e.g. one created before this
+  feature existed).
+
+Nobody can approve/deny hours they submitted themselves, even a top-level
+organizer — someone else with standing has to sign off instead. Anyone with
+narrower-than-top-level standing (an event leader, or an Area's Head/manager
+chain) still lands on the Submission page to log their own hours too — it
+just shows a link over to the Approval page for what they can review. Only
+top-level organizers get the additional volunteer picker (browse anyone's
+full history) on the Approval page.
 
 Each volunteer gets their **own tab** in the spreadsheet, titled `Name
 (email)` — created automatically the first time they submit. That means the

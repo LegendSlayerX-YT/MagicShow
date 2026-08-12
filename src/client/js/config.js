@@ -15,7 +15,9 @@ window.CONFIG = {
     register: '/api/register',
     leaders: '/api/leaders',
     hours: '/api/hours',
-    hoursDecide: '/api/hours/decide'
+    hoursDecide: '/api/hours/decide',
+    events: '/api/events',
+    areas: '/api/areas'
   },
 
   // OAuth 2.0 Client ID for "Sign in with Google". Client IDs aren't secret

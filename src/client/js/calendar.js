@@ -13,10 +13,14 @@
   var pastSection = document.getElementById('calendar-past');
   var pastRow = document.getElementById('calendar-past-row');
 
+  var addEventContainer = document.getElementById('calendar-add-event');
+
   var rootCfg = window.CONFIG || {};
   var endpoint = (rootCfg.api && rootCfg.api.calendar) || '/api/calendar';
   var registerEndpoint = (rootCfg.api && rootCfg.api.register) || '/api/register';
   var leadersEndpoint = (rootCfg.api && rootCfg.api.leaders) || '/api/leaders';
+  var areasEndpoint = (rootCfg.api && rootCfg.api.areas) || '/api/areas';
+  var eventsEndpoint = (rootCfg.api && rootCfg.api.events) || '/api/events';
   // Replaced by the relay's time zone once the response lands.
   var timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
   var rangeEl = document.getElementById('calendar-range');
@@ -25,6 +29,11 @@
   // (see handleCalendar), never derived from anything client-side.
   var registrationOpen = false;
   var isOrganizer = false;
+  // Which Areas the signed-in visitor may create events for (see
+  // handleListAreas) — the Head of an Area, or anyone that Head reports up
+  // to. Empty while signed out or while nobody's org-chart position grants
+  // any Area, in which case the Add Event button doesn't render at all.
+  var usableAreas = [];
 
   function escapeHtml(s) {
     return String(s || '').replace(/[&<>"']/g, function (c) {
@@ -232,6 +241,10 @@
       var items = events.length ? events.map(function (event) {
         var location = event.location ?
           '<p class="calendar-event__meta">' + escapeHtml(event.location) + '</p>' : '';
+        // Blank for events created before the Area feature existed (see
+        // handleCreateEvent in the Worker) — those just show no Area line.
+        var area = event.area ?
+          '<p class="calendar-event__meta calendar-event__area">Area: ' + escapeHtml(event.area) + '</p>' : '';
         var description = event.description ?
           '<p class="calendar-event__meta">' + escapeHtml(event.description.split('\n')[0]) + '</p>' : '';
         // Organizers get the draggable Leads/Volunteers board in place of
@@ -252,6 +265,7 @@
               '<p class="calendar-event__time">' + escapeHtml(timeLabel(event)) + '</p>' +
               '<h3 class="calendar-event__title">' + escapeHtml(summary) + '</h3>' +
               location +
+              area +
               description +
               attendeesLine +
             '</div>' +
@@ -572,11 +586,170 @@
       });
   }
 
+  /* ---------- add event ---------- */
+
+  function areaOptionsMarkup(areas) {
+    return areas.map(function (area) {
+      return '<option value="' + escapeHtml(area) + '">' + escapeHtml(area) + '</option>';
+    }).join('');
+  }
+
+  function addEventMarkup(areas) {
+    return '' +
+      '<button type="button" class="btn btn--solid calendar-add-event__toggle">+ Add Event</button>' +
+      '<form class="contact__form calendar-add-event__form" id="calendar-add-event-form" hidden>' +
+        '<label class="contact__field"><span>Area</span>' +
+          '<select class="contact__input" name="area" required>' +
+            '<option value="">— select an Area —</option>' + areaOptionsMarkup(areas) +
+          '</select></label>' +
+        '<label class="contact__field"><span>Title</span>' +
+          '<input class="contact__input" type="text" name="title" maxlength="200" required></label>' +
+        '<label class="contact__field"><span>Location</span>' +
+          '<input class="contact__input" type="text" name="location" maxlength="200"></label>' +
+        '<label class="contact__field"><span>Description</span>' +
+          '<textarea class="contact__input contact__input--message" name="description" maxlength="4000"></textarea></label>' +
+        '<label class="contact__field calendar-add-event__allday">' +
+          '<input type="checkbox" name="allDay"> <span>All day</span>' +
+        '</label>' +
+        '<div class="calendar-add-event__when calendar-add-event__when--timed">' +
+          '<label class="contact__field"><span>Starts</span>' +
+            '<input class="contact__input" type="datetime-local" name="startDateTime"></label>' +
+          '<label class="contact__field"><span>Ends</span>' +
+            '<input class="contact__input" type="datetime-local" name="endDateTime"></label>' +
+        '</div>' +
+        '<div class="calendar-add-event__when calendar-add-event__when--allday" hidden>' +
+          '<label class="contact__field"><span>Starts</span>' +
+            '<input class="contact__input" type="date" name="startDate"></label>' +
+          '<label class="contact__field"><span>Ends</span>' +
+            '<input class="contact__input" type="date" name="endDate"></label>' +
+        '</div>' +
+        '<div class="contact__actions">' +
+          '<button type="submit" class="btn btn--solid">Create Event</button>' +
+          '<p class="contact__status contact__status--inline" id="calendar-add-event-status" role="status"></p>' +
+        '</div>' +
+      '</form>';
+  }
+
+  function renderAddEvent() {
+    if (!addEventContainer) return;
+    if (!usableAreas.length) {
+      addEventContainer.innerHTML = '';
+      return;
+    }
+
+    addEventContainer.innerHTML = addEventMarkup(usableAreas);
+
+    var form = document.getElementById('calendar-add-event-form');
+    addEventContainer.querySelector('.calendar-add-event__toggle').addEventListener('click', function () {
+      form.hidden = !form.hidden;
+    });
+
+    var timedWrap = form.querySelector('.calendar-add-event__when--timed');
+    var allDayWrap = form.querySelector('.calendar-add-event__when--allday');
+    form.allDay.addEventListener('change', function () {
+      timedWrap.hidden = form.allDay.checked;
+      allDayWrap.hidden = !form.allDay.checked;
+    });
+
+    form.addEventListener('submit', function (evt) {
+      evt.preventDefault();
+      submitNewEvent(form);
+    });
+  }
+
+  function submitNewEvent(form) {
+    var auth = window.GoogleAuth;
+    var statusEl = document.getElementById('calendar-add-event-status');
+    var button = form.querySelector('button[type="submit"]');
+    if (!auth || !auth.isSignedIn()) {
+      statusEl.textContent = 'Sign in with Google (top right) to create an event.';
+      statusEl.setAttribute('data-state', 'error');
+      return;
+    }
+
+    var allDay = form.allDay.checked;
+    var payload = {
+      area: form.area.value,
+      title: form.title.value,
+      location: form.location.value,
+      description: form.description.value,
+      allDay: allDay,
+      credential: auth.getCredential()
+    };
+    if (allDay) {
+      payload.startDate = form.startDate.value;
+      payload.endDate = form.endDate.value;
+    } else {
+      // datetime-local has no timezone of its own — new Date() reads it as
+      // the visitor's local time, same as every other local time on this
+      // page, and toISOString() below converts that to an absolute instant
+      // the Worker can trust regardless of the visitor's clock/zone.
+      payload.start = form.startDateTime.value ? new Date(form.startDateTime.value).toISOString() : '';
+      payload.end = form.endDateTime.value ? new Date(form.endDateTime.value).toISOString() : '';
+    }
+
+    button.disabled = true;
+    statusEl.textContent = 'Creating…';
+    statusEl.removeAttribute('data-state');
+
+    fetch(eventsEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+      .then(function (response) {
+        return response.json()
+          .catch(function () { return {}; })
+          .then(function (data) { return { ok: response.ok, data: data }; });
+      })
+      .then(function (result) {
+        button.disabled = false;
+        if (!result.ok) {
+          statusEl.textContent = result.data.error || 'Something went wrong. Please try again.';
+          statusEl.setAttribute('data-state', 'error');
+          return;
+        }
+        statusEl.textContent = 'Event created.';
+        statusEl.setAttribute('data-state', 'success');
+        form.reset();
+        form.hidden = true;
+        loadCalendar();
+      })
+      .catch(function (error) {
+        console.warn('Creating event failed:', error);
+        button.disabled = false;
+        statusEl.textContent = 'Could not reach the server. Please try again.';
+        statusEl.setAttribute('data-state', 'error');
+      });
+  }
+
+  function loadAreas() {
+    var auth = window.GoogleAuth;
+    if (!auth || !auth.isSignedIn()) {
+      usableAreas = [];
+      renderAddEvent();
+      return;
+    }
+    fetch(areasEndpoint, { headers: { Authorization: 'Bearer ' + auth.getCredential() } })
+      .then(function (response) { return response.ok ? response.json() : { areas: [] }; })
+      .then(function (data) {
+        usableAreas = Array.isArray(data.areas) ? data.areas : [];
+        renderAddEvent();
+      })
+      .catch(function () {
+        usableAreas = [];
+        renderAddEvent();
+      });
+  }
+
   // Reload on sign-in/out so the register button/hint/badge for every
   // event reflects the new auth state, and signed-in visitors pick up
-  // "Registered" badges for events they're already on.
+  // "Registered" badges for events they're already on. Areas are refetched
+  // the same way, since usableAreas depends on who's signed in.
   window.addEventListener('googleauth:signin', loadCalendar);
   window.addEventListener('googleauth:signout', loadCalendar);
+  window.addEventListener('googleauth:signin', loadAreas);
+  window.addEventListener('googleauth:signout', loadAreas);
 
   function fetchUrl(start, endExclusive, includeAttendees) {
     var params = new URLSearchParams({
@@ -661,4 +834,5 @@
   }
 
   loadCalendar();
+  loadAreas();
 })();
