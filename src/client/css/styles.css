@@ -857,6 +857,17 @@ footer {
   display: none;
 }
 
+.calendar-add-event__cancel {
+  color: var(--crimson-bright);
+  border-color: var(--crimson-bright);
+}
+
+/* Same specificity clash as .calendar-add-event__when[hidden] above: .btn
+   sets `display`, which otherwise beats the `hidden` attribute's UA rule. */
+.calendar-add-event__toggle[hidden] {
+  display: none;
+}
+
 .calendar-event__area { color: var(--crimson-bright); }
 
 /* ---- Recent past events — horizontal scroll row ---- */

@@ -644,12 +644,15 @@
     addEventContainer.innerHTML = addEventMarkup(usableAreas);
 
     var form = document.getElementById('calendar-add-event-form');
-    addEventContainer.querySelector('.calendar-add-event__toggle').addEventListener('click', function () {
+    var toggleButton = addEventContainer.querySelector('.calendar-add-event__toggle');
+    toggleButton.addEventListener('click', function () {
       form.hidden = !form.hidden;
+      toggleButton.hidden = !form.hidden;
     });
     form.querySelector('.calendar-add-event__cancel').addEventListener('click', function () {
       form.reset();
       form.hidden = true;
+      toggleButton.hidden = false;
     });
 
     var timedWrap = form.querySelector('.calendar-add-event__when--timed');
@@ -721,6 +724,8 @@
         statusEl.setAttribute('data-state', 'success');
         form.reset();
         form.hidden = true;
+        var toggleButton = form.parentNode.querySelector('.calendar-add-event__toggle');
+        if (toggleButton) toggleButton.hidden = false;
         loadCalendar();
       })
       .catch(function (error) {
