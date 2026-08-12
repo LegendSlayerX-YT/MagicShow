@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Calendar — Gasp Machine</title>
-  <meta name="description" content="See upcoming and recent Gasp Machine events on our public calendar." />
+  <title>Volunteer Hour Approval — Gasp Machine</title>
+  <meta name="description" content="Review and verify submitted volunteer hours for Gasp Machine events." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Audiowide&family=Poppins:wght@300;400;500;600&display=swap" rel="stylesheet" />
@@ -19,7 +19,7 @@
         <ul class="nav__links">
           <li><a href="index.html">Home</a></li>
           <li><a href="about.html">About Us</a></li>
-          <li><a href="calendar.html" class="active">Calendar</a></li>
+          <li><a href="calendar.html">Calendar</a></li>
           <li class="nav__dropdown">
             <a href="archives.html">Archives</a>
             <ul class="nav__menu">
@@ -34,23 +34,13 @@
   </nav>
 
   <main class="container">
-    <h1 class="section-title">Calendar</h1>
+    <h1 class="section-title">Volunteer Hour Approval</h1>
     <p class="calendar-intro">
-      Browse upcoming public events from our calendar, plus recent past events below.
+      Review pending volunteer hour submissions and look up any volunteer's history.
     </p>
 
-    <section class="calendar-panel">
-      <div class="calendar-panel__meta">
-        <p id="calendar-range" class="calendar-panel__range">Loading calendar range…</p>
-      </div>
-      <div id="calendar-list" class="calendar-list">
-        <p class="archive-status">Loading calendar…</p>
-      </div>
-    </section>
-
-    <section class="calendar-past" id="calendar-past" hidden>
-      <h2 class="calendar-past__title">Recent Past Events</h2>
-      <div id="calendar-past-row" class="calendar-past__row"></div>
+    <section id="hours-panel" class="hours-panel">
+      <p class="archive-status">Loading…</p>
     </section>
   </main>
 
@@ -61,6 +51,7 @@
   <script src="js/main.js"></script>
   <script src="js/config.js"></script>
   <script src="js/auth.js"></script>
-  <script src="js/calendar.js"></script>
+  <script src="js/hours-common.js"></script>
+  <script src="js/hours-approval.js"></script>
 </body>
 </html>

@@ -8,7 +8,8 @@ API calls so the API keys never reach the browser.
 - **About Us** (`about.html`) — club member cards (currently Henry Chen).
 - **Calendar** (`calendar.html`) — public Google Calendar events fetched and rendered in a themed list for the rolling window from 3 days ago through 7 days ahead. Upcoming events have a **Register** button that adds the visitor's email to the event's guest list.
 - **Archives** (`archives.html`) — previous shows, pulled **live** from your public YouTube playlist, with a local fallback list.
-- **Volunteer Hours** (`hours.html`) — signed-in visitors log hours (amount, date, and optionally which event) to a Google Sheet; organizers see a pending queue with Verify/Deny buttons instead, plus a volunteer picker to look up any submitter's total verified hours and full submission history, and volunteers see their own submission history plus a running total of verified hours.
+- **Volunteer Hour Submission** (`hours.html`) — signed-in visitors log hours (amount, date, and optionally which event, or a free-text title when no event applies) to a Google Sheet, and see their own submission history plus a running total of verified hours.
+- **Volunteer Hour Approval** (`hours-approval.html`) — organizers see a pending queue with Verify/Deny buttons, plus a volunteer picker to look up any submitter's total verified hours and full submission history. The dropdown under the account avatar links to whichever of these two pages applies to the signed-in visitor.
 
 ---
 
@@ -29,15 +30,18 @@ MagicShow/
         ├── about.html      # About Us
         ├── calendar.html   # Calendar (public Google Calendar events)
         ├── archives.html   # Archives (videos)
-        ├── hours.html      # Volunteer Hours (log hours / verify queue)
-        ├── css/styles.css  # All styles
+        ├── hours.html          # Volunteer Hour Submission (log hours)
+        ├── hours-approval.html # Volunteer Hour Approval (organizer verify queue)
+        ├── css/styles.css      # All styles
         └── js/
-            ├── calendar.js # Calls /api/calendar + renders the rolling date range
-            ├── main.js     # Nav toggle + footer year
-            ├── magic-bg.js # Home animated background
-            ├── config.js   # ← EDIT THIS: video overrides + fallback list
-            ├── archives.js # Calls /api/archives + renders the shows
-            └── hours.js    # Calls /api/hours(+/decide) + renders the log form / verify queue
+            ├── calendar.js      # Calls /api/calendar + renders the rolling date range
+            ├── main.js          # Nav toggle + footer year
+            ├── magic-bg.js      # Home animated background
+            ├── config.js        # ← EDIT THIS: video overrides + fallback list
+            ├── archives.js      # Calls /api/archives + renders the shows
+            ├── hours-common.js  # Shared helpers for the two hours pages
+            ├── hours.js         # Calls /api/hours + renders the log form
+            └── hours-approval.js # Calls /api/hours(+/decide) + renders the verify queue
 ```
 
 ## The API relay
@@ -212,14 +216,17 @@ re-run step 3 and set the secret again.
 
 ## Volunteer hours
 
-The **Volunteer Hours** page (`hours.html`) lets any signed-in visitor log
-hours — amount, date, and optionally which event, picked from a dropdown of
-real Calendar events so names can't be typo'd or made up. There's no database
-in this project, so submissions are appended as rows to a **Google Sheet**,
-the same way Calendar is the datastore for events. Organizers (see
-`ORGANIZER_EMAILS`) get a different view instead: a pending queue with
-**Verify**/**Deny** buttons. A verified row counts toward that volunteer's
-running total, shown back to them on the same page.
+The **Volunteer Hour Submission** page (`hours.html`) lets any signed-in
+visitor log hours — amount, date, and either an event picked from a dropdown
+of real Calendar events (so names can't be typo'd or made up) or, when no
+event applies, a free-text title. There's no database in this project, so
+submissions are appended as rows to a **Google Sheet**, the same way Calendar
+is the datastore for events. Organizers (see `ORGANIZER_EMAILS`) get a
+separate **Volunteer Hour Approval** page (`hours-approval.html`) instead: a
+pending queue with **Verify**/**Deny** buttons. A verified row counts toward
+that volunteer's running total, shown back to them on the Submission page.
+The dropdown under the account avatar always links to whichever page applies
+to the signed-in visitor.
 
 ### Why this needs the same OAuth credential as Calendar
 

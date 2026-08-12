@@ -1,8 +1,9 @@
 /* ===========================================================
-   Volunteer Hours — signed-in visitors log hours through the
-   site's own /api/hours relay; organizers see a pending queue
-   with Verify/Deny instead (mirrors the Register vs.
-   pick-leaders split on the Calendar page — see calendar.js).
+   Volunteer Hour Submission — signed-in visitors log hours
+   through the site's own /api/hours relay. Organizers review
+   submissions on the separate Volunteer Hour Approval page
+   (hours-approval.html / hours-approval.js) instead — mirrors
+   the Register vs. pick-leaders split on the Calendar page.
    Every response here comes from a verified Google sign-in, so
    there's no anonymous state beyond "please sign in".
    =========================================================== */
@@ -10,16 +11,12 @@
   var panel = document.getElementById('hours-panel');
   if (!panel) return;
 
+  var common = window.HoursCommon;
+  var escapeHtml = common.escapeHtml;
+
   var rootCfg = window.CONFIG || {};
   var calendarEndpoint = (rootCfg.api && rootCfg.api.calendar) || '/api/calendar';
   var hoursEndpoint = (rootCfg.api && rootCfg.api.hours) || '/api/hours';
-  var decideEndpoint = (rootCfg.api && rootCfg.api.hoursDecide) || '/api/hours/decide';
-
-  function escapeHtml(s) {
-    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
-      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
-    });
-  }
 
   function status(message) {
     panel.innerHTML = '<p class="archive-status">' + message + '</p>';
@@ -30,26 +27,6 @@
     return d.getFullYear() + '-' +
       String(d.getMonth() + 1).padStart(2, '0') + '-' +
       String(d.getDate()).padStart(2, '0');
-  }
-
-  // `date` on a submission is the plain "YYYY-MM-DD" the volunteer typed —
-  // parsed as local time (not UTC) so it always displays as the same day.
-  function formatDate(iso) {
-    var parts = String(iso || '').split('-');
-    if (parts.length !== 3) return iso || '';
-    var d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
-    if (isNaN(d.getTime())) return iso;
-    return new Intl.DateTimeFormat('en-US', { month: 'long', day: 'numeric', year: 'numeric' }).format(d);
-  }
-
-  function statusLabel(s) {
-    if (s === 'verified') return 'Verified';
-    if (s === 'denied') return 'Denied';
-    return 'Pending';
-  }
-
-  function statusBadge(s) {
-    return '<span class="hours-status hours-status--' + escapeHtml(s) + '">' + statusLabel(s) + '</span>';
   }
 
   /* ---------- event dropdown (real calendar events, id + display name) ---------- */
@@ -79,35 +56,54 @@
     return when ? when + ' — ' + summary : summary;
   }
 
-  // Same two-window split as calendar.js (today+7 days ahead, 90 days back)
-  // — the Worker caps any single request's range at 92 days.
+  // Only events that have already happened — no one claims volunteer hours
+  // for an event that hasn't occurred yet. Includes today, since an event
+  // earlier today may already be over. 90-day lookback mirrors calendar.js
+  // and stays under the Worker's 92-day range cap.
   var PAST_DAYS = 90;
 
   function loadEventOptions(callback) {
     var today = new Date();
-    var futureStart = startOfDay(today);
-    var futureEndExclusive = startOfDay(addDays(today, 8));
-    var pastStart = startOfDay(addDays(today, -PAST_DAYS));
-    var pastEndExclusive = futureStart;
+    var start = startOfDay(addDays(today, -PAST_DAYS));
+    var endExclusive = startOfDay(addDays(today, 1));
+    var params = new URLSearchParams({ timeMin: start.toISOString(), timeMax: endExclusive.toISOString() });
 
-    function fetchRange(start, endExclusive) {
-      var params = new URLSearchParams({ timeMin: start.toISOString(), timeMax: endExclusive.toISOString() });
-      return fetch(calendarEndpoint + '?' + params.toString())
-        .then(function (r) { return r.ok ? r.json() : { events: [] }; })
-        .then(function (data) { return data.events || []; })
-        .catch(function () { return []; });
-    }
-
-    Promise.all([fetchRange(futureStart, futureEndExclusive), fetchRange(pastStart, pastEndExclusive)])
-      .then(function (results) {
-        var events = results[0].concat(results[1]);
+    fetch(calendarEndpoint + '?' + params.toString())
+      .then(function (r) { return r.ok ? r.json() : { events: [] }; })
+      .then(function (data) { return data.events || []; })
+      .catch(function () { return []; })
+      .then(function (events) {
         events.sort(function (a, b) { return eventStartMs(b) - eventStartMs(a); });
         callback(events);
       });
   }
 
+  // "YYYY-MM-DD" for the date <input>, from the event's start — local
+  // calendar date, matching how the date field itself is interpreted.
+  function eventDateIso(event) {
+    var start = event.start || {};
+    if (start.date) return start.date;
+    var ms = eventStartMs(event);
+    if (isNaN(ms)) return '';
+    var d = new Date(ms);
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+
+  // Hours between a timed event's start/end, rounded to the nearest quarter
+  // hour (matches the hours input's step). Null for all-day events, where
+  // there's no meaningful duration to infer.
+  function eventDurationHours(event) {
+    var start = event.start || {};
+    var end = event.end || {};
+    if (!start.dateTime || !end.dateTime) return null;
+    var startMs = Date.parse(start.dateTime);
+    var endMs = Date.parse(end.dateTime);
+    if (isNaN(startMs) || isNaN(endMs) || endMs <= startMs) return null;
+    return Math.round((endMs - startMs) / 3600000 * 4) / 4;
+  }
+
   function eventOptionsMarkup(events) {
-    var markup = '<option value="">— none —</option>';
+    var markup = '<option value="">— enter it myself —</option>';
     events.forEach(function (event) {
       if (!event.id) return;
       markup += '<option value="' + escapeHtml(event.id) + '">' + escapeHtml(eventOptionLabel(event)) + '</option>';
@@ -115,17 +111,7 @@
     return markup;
   }
 
-  /* ---------- volunteer view: log form + own submissions ---------- */
-
-  function submissionMarkup(item) {
-    return '' +
-      '<li class="hours-item">' +
-        '<span class="hours-item__date">' + escapeHtml(formatDate(item.date)) + '</span>' +
-        '<span class="hours-item__hours">' + escapeHtml(item.hours) + ' hrs</span>' +
-        '<span class="hours-item__event">' + escapeHtml(item.event || '—') + '</span>' +
-        statusBadge(item.status) +
-      '</li>';
-  }
+  /* ---------- log form + own submissions ---------- */
 
   // Range filtering compares "YYYY-MM-DD" strings directly (lexicographic
   // order matches date order for this format), so no Date parsing is needed.
@@ -148,7 +134,7 @@
     var filtered = filterByDateRange(allSubmissions, start, end);
     var emptyMessage = allSubmissions.length ? 'No submissions in range.' : 'No submissions yet.';
     var rows = filtered.length ?
-      filtered.map(submissionMarkup).join('') :
+      filtered.map(common.submissionMarkup).join('') :
       '<li class="hours-item hours-item--empty">' + escapeHtml(emptyMessage) + '</li>';
     document.getElementById('hours-list').innerHTML = rows;
 
@@ -171,6 +157,8 @@
           '<input class="contact__input" type="date" name="date" max="' + todayIso() + '" required></label>' +
         '<label class="contact__field"><span>Event (optional)</span>' +
           '<select class="contact__input" name="eventId">' + eventOptionsMarkup(events) + '</select></label>' +
+        '<label class="contact__field" id="hours-event-title-field"><span>Event title</span>' +
+          '<input class="contact__input" type="text" name="eventTitle" maxlength="200" placeholder="What was this for?"></label>' +
         '<div class="contact__actions">' +
           '<button type="submit" class="btn btn--solid">Submit</button>' +
           '<p class="contact__status contact__status--inline" id="hours-form-status" role="status"></p>' +
@@ -195,9 +183,40 @@
     var totalHours = typeof data.totalHours === 'number' ? data.totalHours : 0;
     panel.innerHTML = volunteerMarkup(totalHours, events);
 
-    document.getElementById('hours-form').addEventListener('submit', function (evt) {
+    var eventsById = {};
+    events.forEach(function (event) { if (event.id) eventsById[event.id] = event; });
+
+    var form = document.getElementById('hours-form');
+    form.addEventListener('submit', function (evt) {
       evt.preventDefault();
       submitHours(evt.target);
+    });
+
+    // No event selected from the calendar dropdown ("— enter it myself —")
+    // means there's no server-verifiable title to fall back on, so ask for
+    // one as free text instead — required only in that case. Toggled via
+    // inline style rather than the `hidden` attribute: .contact__field's
+    // own `display: block` is an author rule and outranks the UA
+    // stylesheet's `[hidden] { display: none }` regardless of specificity.
+    var titleField = document.getElementById('hours-event-title-field');
+    function syncEventTitleField() {
+      var noEventSelected = !form.eventId.value;
+      titleField.style.display = noEventSelected ? '' : 'none';
+      form.eventTitle.required = noEventSelected;
+      if (!noEventSelected) form.eventTitle.value = '';
+    }
+    syncEventTitleField();
+
+    // Pre-fill date/hours from the picked event as a convenience — the
+    // volunteer can still edit either field afterward.
+    form.eventId.addEventListener('change', function () {
+      syncEventTitleField();
+      var event = eventsById[form.eventId.value];
+      if (!event) return;
+      var dateIso = eventDateIso(event);
+      if (dateIso) form.date.value = dateIso;
+      var hours = eventDurationHours(event);
+      if (hours) form.hours.value = hours;
     });
 
     var startInput = document.getElementById('hours-filter-start');
@@ -240,6 +259,7 @@
         hours: form.hours.value,
         date: form.date.value,
         eventId: form.eventId.value,
+        eventTitle: form.eventTitle.value,
         credential: auth.getCredential()
       })
     })
@@ -267,134 +287,6 @@
       });
   }
 
-  /* ---------- organizer view: pending queue + per-volunteer lookup ---------- */
-
-  function organizerItemMarkup(item) {
-    var meta = escapeHtml(formatDate(item.date)) + ' · ' + escapeHtml(item.hours) + ' hrs' +
-      (item.event ? ' · ' + escapeHtml(item.event) : '');
-    return '' +
-      '<li class="hours-item hours-item--decide" data-id="' + escapeHtml(item.id) + '">' +
-        '<div class="hours-item__body">' +
-          '<p class="hours-item__who">' + escapeHtml(item.name || item.email) + '</p>' +
-          '<p class="hours-item__meta">' + meta + '</p>' +
-        '</div>' +
-        '<div class="hours-item__actions">' +
-          '<button type="button" class="btn btn--solid hours-item__verify">Verify</button>' +
-          '<button type="button" class="btn hours-item__deny">Deny</button>' +
-          '<p class="hours-item__status" role="status"></p>' +
-        '</div>' +
-      '</li>';
-  }
-
-  function personOptionsMarkup(volunteers) {
-    var markup = '<option value="">— select a volunteer —</option>';
-    volunteers.forEach(function (person) {
-      markup += '<option value="' + escapeHtml(person.email) + '">' + escapeHtml(person.name) + '</option>';
-    });
-    return markup;
-  }
-
-  function personHoursMarkup(data) {
-    var submissions = Array.isArray(data.submissions) ? data.submissions : [];
-    var totalHours = typeof data.totalHours === 'number' ? data.totalHours : 0;
-    var rows = submissions.length ?
-      submissions.map(submissionMarkup).join('') :
-      '<li class="hours-item hours-item--empty">No submissions yet.</li>';
-    return '' +
-      '<p class="hours-summary__total">Total verified hours: <strong>' + escapeHtml(totalHours) + '</strong></p>' +
-      '<ul class="hours-list">' + rows + '</ul>';
-  }
-
-  function loadPersonHours(email, resultEl) {
-    var auth = window.GoogleAuth;
-    resultEl.innerHTML = '<p class="archive-status">Loading…</p>';
-    fetch(hoursEndpoint + '?person=' + encodeURIComponent(email), {
-      headers: { Authorization: 'Bearer ' + auth.getCredential() }
-    })
-      .then(function (response) {
-        return response.json()
-          .catch(function () { return {}; })
-          .then(function (data) { return { ok: response.ok, data: data }; });
-      })
-      .then(function (result) {
-        if (!result.ok) {
-          resultEl.innerHTML = '<p class="archive-status">' + escapeHtml(result.data.error || 'Could not load volunteer hours.') + '</p>';
-          return;
-        }
-        resultEl.innerHTML = personHoursMarkup(result.data);
-      })
-      .catch(function (error) {
-        console.warn('Volunteer lookup failed:', error);
-        resultEl.innerHTML = '<p class="archive-status">Could not reach the server. Please try again.</p>';
-      });
-  }
-
-  function renderOrganizer(pending, volunteers) {
-    var items = pending.length ?
-      pending.map(organizerItemMarkup).join('') :
-      '<li class="hours-item hours-item--empty">No pending submissions.</li>';
-    panel.innerHTML = '' +
-      '<ul class="hours-list hours-list--organizer">' + items + '</ul>' +
-      '<div class="hours-lookup">' +
-        '<label class="contact__field"><span>View a volunteer’s hours</span>' +
-          '<select class="contact__input" id="hours-person-select">' + personOptionsMarkup(volunteers) + '</select>' +
-        '</label>' +
-        '<div id="hours-person-result"></div>' +
-      '</div>';
-
-    document.getElementById('hours-person-select').addEventListener('change', function (evt) {
-      var resultEl = document.getElementById('hours-person-result');
-      if (!evt.target.value) {
-        resultEl.innerHTML = '';
-        return;
-      }
-      loadPersonHours(evt.target.value, resultEl);
-    });
-  }
-
-  panel.addEventListener('click', function (evt) {
-    var verify = evt.target.closest('.hours-item__verify');
-    var deny = evt.target.closest('.hours-item__deny');
-    if (!verify && !deny) return;
-    decideHours(evt.target.closest('.hours-item'), verify ? 'verify' : 'deny');
-  });
-
-  function decideHours(item, decision) {
-    var auth = window.GoogleAuth;
-    var statusEl = item.querySelector('.hours-item__status');
-    var buttons = item.querySelectorAll('button');
-    buttons.forEach(function (b) { b.disabled = true; });
-    statusEl.textContent = decision === 'verify' ? 'Verifying…' : 'Denying…';
-
-    fetch(decideEndpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: item.dataset.id, decision: decision, credential: auth.getCredential() })
-    })
-      .then(function (response) {
-        return response.json()
-          .catch(function () { return {}; })
-          .then(function (data) { return { ok: response.ok, data: data }; });
-      })
-      .then(function (result) {
-        if (!result.ok) {
-          buttons.forEach(function (b) { b.disabled = false; });
-          statusEl.textContent = result.data.error || 'Something went wrong. Please try again.';
-          return;
-        }
-        item.remove();
-        var list = panel.querySelector('.hours-list--organizer');
-        if (list && !list.children.length) {
-          list.innerHTML = '<li class="hours-item hours-item--empty">No pending submissions.</li>';
-        }
-      })
-      .catch(function (error) {
-        console.warn('Deciding submission failed:', error);
-        buttons.forEach(function (b) { b.disabled = false; });
-        statusEl.textContent = 'Could not reach the server. Please try again.';
-      });
-  }
-
   /* ---------- boot ---------- */
 
   function loadPanel() {
@@ -418,10 +310,10 @@
           return;
         }
         if (result.data.isOrganizer) {
-          renderOrganizer(result.data.pending || [], result.data.volunteers || []);
-        } else {
-          loadEventOptions(function (events) { renderVolunteer(result.data, events); });
+          status('Organizers review submissions from <a href="hours-approval.html">Volunteer Hour Approval</a> instead.');
+          return;
         }
+        loadEventOptions(function (events) { renderVolunteer(result.data, events); });
       })
       .catch(function (error) {
         console.warn('Volunteer hours fetch failed:', error);

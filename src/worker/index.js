@@ -479,9 +479,13 @@ async function handleSubmitHours(request, env) {
   var token = await getAccessToken(oauth);
   if (token.error) return noStore(json({ error: token.error }, token.status));
 
-  // The event name is looked up server-side from the id the client sent,
-  // never trusted as free text — same reasoning as leaders only being
-  // pickable from an event's actual guest list (see handleLeaders).
+  // When a real calendar event is picked, its name is looked up server-side
+  // from the id the client sent, never trusted as free text — same
+  // reasoning as leaders only being pickable from an event's actual guest
+  // list (see handleLeaders). Without a picked event there's nothing to
+  // verify against, so a volunteer-typed title is the only option; it's
+  // just plain text stored in a Sheet cell and HTML-escaped on display, so
+  // there's no injection risk in accepting it as-is.
   var eventId = typeof body.eventId === 'string' ? body.eventId.trim() : '';
   var eventSummary = '';
   if (eventId) {
@@ -495,6 +499,15 @@ async function handleSubmitHours(request, env) {
       return noStore(json({ error: eventResult.status === 404 ? 'Unknown event.' : eventResult.error }, eventResult.status));
     }
     eventSummary = eventResult.body.summary || 'Untitled event';
+  } else {
+    var eventTitle = typeof body.eventTitle === 'string' ? body.eventTitle.trim() : '';
+    if (!eventTitle) {
+      return noStore(json({ error: 'Enter what the hours were for.' }, 400));
+    }
+    if (eventTitle.length > 200) {
+      return noStore(json({ error: 'Event title is too long.' }, 400));
+    }
+    eventSummary = eventTitle;
   }
 
   var row = [
