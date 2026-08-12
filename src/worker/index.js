@@ -645,7 +645,7 @@ async function handleViewHours(request, env) {
   }, 0);
   var submissions = ownResult.rows
     .map(function (row) {
-      return { id: row[0], submittedAt: row[1], hours: row[2], date: row[3], event: row[4], status: row[6] };
+      return { id: row[0], submittedAt: row[1], hours: row[2], date: row[3], event: row[4], eventId: row[5] || '', status: row[6] };
     })
     .sort(function (a, b) { return Date.parse(b.submittedAt) - Date.parse(a.submittedAt); });
 

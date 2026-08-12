@@ -186,8 +186,21 @@
       '</div>';
   }
 
+  // Events already claimed — pending or verified, so hours can't be double
+  // logged against them. A denied submission doesn't count: it was rejected,
+  // not fulfilled, so the event stays selectable to try again.
+  function claimedEventIds(submissions) {
+    var claimed = {};
+    submissions.forEach(function (item) {
+      if (item.eventId && (item.status === 'pending' || item.status === 'verified')) claimed[item.eventId] = true;
+    });
+    return claimed;
+  }
+
   function renderVolunteer(data, events) {
     var submissions = Array.isArray(data.submissions) ? data.submissions : [];
+    var claimed = claimedEventIds(submissions);
+    events = events.filter(function (event) { return !claimed[event.id]; });
     var totalHours = typeof data.totalHours === 'number' ? data.totalHours : 0;
     // Leading an event doesn't make someone an organizer, so they still land
     // here to log their own hours — this is just a pointer to where they
