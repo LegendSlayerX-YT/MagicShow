@@ -181,7 +181,12 @@
   function renderVolunteer(data, events) {
     var submissions = Array.isArray(data.submissions) ? data.submissions : [];
     var totalHours = typeof data.totalHours === 'number' ? data.totalHours : 0;
-    panel.innerHTML = volunteerMarkup(totalHours, events);
+    // Leading an event doesn't make someone an organizer, so they still land
+    // here to log their own hours — this is just a pointer to where they
+    // approve submissions for the event(s) they lead.
+    var leaderNote = data.isLeader ?
+      '<p class="archive-status hours-leader-note">You lead an event — <a href="hours-approval.html">review its pending hours</a>.</p>' : '';
+    panel.innerHTML = leaderNote + volunteerMarkup(totalHours, events);
 
     var eventsById = {};
     events.forEach(function (event) { if (event.id) eventsById[event.id] = event; });

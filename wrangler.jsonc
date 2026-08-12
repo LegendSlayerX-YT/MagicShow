@@ -40,11 +40,10 @@
     // Spreadsheet ID backing the Volunteer Hours page — see
     // scripts/create-hours-sheet.mjs (README "Volunteer hours"). Not a
     // secret, just an identifier; the OAuth credential above is what
-    // actually grants write access.
-    "GOOGLE_SHEETS_ID": "1bfdBNr1ZK83UdXu20tzky9QP90fyU-0DS-CvaT68IqE",
-    // Tab name within that spreadsheet. Optional — defaults to
-    // "Volunteer Hours" in code (src/worker/index.js sheetsTab) if unset.
-    "GOOGLE_SHEETS_HOURS_TAB": "Volunteer Hours"
+    // actually grants write access. Each volunteer gets their own tab
+    // within it, named "Name (email)" by the Worker — see
+    // src/worker/index.js buildTabTitle.
+    "GOOGLE_SHEETS_ID": "1bfdBNr1ZK83UdXu20tzky9QP90fyU-0DS-CvaT68IqE"
   },
   "observability": {
     "logs": {

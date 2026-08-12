@@ -7,9 +7,13 @@
    database, so the Sheet is the datastore, same way Calendar is
    the datastore for events/registrations.
 
-   This script creates that spreadsheet (one tab, header row)
-   using the calendar/sheets-owner's refresh token, and prints
-   the spreadsheet ID to paste into wrangler.jsonc.
+   This script creates that spreadsheet using the calendar/sheets-
+   owner's refresh token, and prints the spreadsheet ID to paste
+   into wrangler.jsonc. It's just the empty spreadsheet with its
+   one default tab (Sheets requires at least one) — the Worker
+   creates a tab per volunteer on demand as people submit hours
+   (see buildTabTitle / handleSubmitHours in src/worker/index.js),
+   so there's no header row to write here.
 
    Usage:
      node scripts/create-hours-sheet.mjs
@@ -22,12 +26,6 @@
    =========================================================== */
 
 import { readFileSync } from 'node:fs';
-
-const TAB_NAME = 'Volunteer Hours';
-const HEADER_ROW = [
-  'id', 'submittedAt', 'email', 'name', 'hours', 'date', 'event',
-  'status', 'decidedBy', 'decidedAt'
-];
 
 function loadDevVars() {
   let text;
@@ -82,8 +80,7 @@ const createResponse = await fetch('https://sheets.googleapis.com/v4/spreadsheet
     'Content-Type': 'application/json'
   },
   body: JSON.stringify({
-    properties: { title: 'Gasp Machine — Volunteer Hours' },
-    sheets: [{ properties: { title: TAB_NAME } }]
+    properties: { title: 'Gasp Machine — Volunteer Hours' }
   })
 });
 const spreadsheet = await createResponse.json();
@@ -92,25 +89,6 @@ if (!createResponse.ok) {
   process.exit(1);
 }
 const spreadsheetId = spreadsheet.spreadsheetId;
-
-const headerRange = encodeURIComponent(`${TAB_NAME}!A1:J1`);
-const headerResponse = await fetch(
-  `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${headerRange}?valueInputOption=RAW`,
-  {
-    method: 'PUT',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ values: [HEADER_ROW] })
-  }
-);
-if (!headerResponse.ok) {
-  const detail = await headerResponse.text();
-  console.error('\nCreated the spreadsheet but could not write the header row:', headerResponse.status, detail);
-  console.error(`Add it manually — spreadsheet ID is ${spreadsheetId}`);
-  process.exit(1);
-}
 
 console.log(`
 Success. Spreadsheet: https://docs.google.com/spreadsheets/d/${spreadsheetId}

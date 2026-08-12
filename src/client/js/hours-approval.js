@@ -1,8 +1,11 @@
 /* ===========================================================
-   Volunteer Hour Approval — organizers review the pending queue
-   of volunteer-submitted hours and verify/deny each one, plus
-   look up any volunteer's history. Volunteers submit their own
-   hours on the separate Volunteer Hour Submission page
+   Volunteer Hour Approval — organizers review the full pending
+   queue of volunteer-submitted hours and verify/deny each one,
+   plus look up any volunteer's history. Event leaders (picked on
+   the Calendar page — see handleLeaders in the Worker) get the
+   same verify/deny queue, but scoped to just the events they
+   lead, and without the volunteer lookup. Volunteers submit their
+   own hours on the separate Volunteer Hour Submission page
    (hours.html / hours.js) instead — mirrors the Register vs.
    pick-leaders split on the Calendar page.
    =========================================================== */
@@ -84,19 +87,25 @@
       });
   }
 
-  function renderOrganizer(pending, volunteers) {
+  // The volunteer lookup (browsing anyone's full history) stays
+  // organizer-only — a leader only gets the pending queue for events they
+  // lead, never a picker over every volunteer.
+  function renderQueue(pending, volunteers, showLookup) {
     var items = pending.length ?
       pending.map(organizerItemMarkup).join('') :
       '<li class="hours-item hours-item--empty">No pending submissions.</li>';
-    panel.innerHTML = '' +
-      '<ul class="hours-list hours-list--organizer">' + items + '</ul>' +
+    var lookupMarkup = !showLookup ? '' : '' +
       '<div class="hours-lookup">' +
         '<label class="contact__field"><span>View a volunteer’s hours</span>' +
           '<select class="contact__input" id="hours-person-select">' + personOptionsMarkup(volunteers) + '</select>' +
         '</label>' +
         '<div id="hours-person-result"></div>' +
       '</div>';
+    panel.innerHTML = '' +
+      '<ul class="hours-list hours-list--organizer">' + items + '</ul>' +
+      lookupMarkup;
 
+    if (!showLookup) return;
     document.getElementById('hours-person-select').addEventListener('change', function (evt) {
       var resultEl = document.getElementById('hours-person-result');
       if (!evt.target.value) {
@@ -172,11 +181,11 @@
           status(escapeHtml(result.data.error || 'Could not load volunteer hours.'));
           return;
         }
-        if (!result.data.isOrganizer) {
-          status('This page is for organizers only. Head to <a href="hours.html">Volunteer Hour Submission</a> to log your own hours.');
+        if (!result.data.isOrganizer && !result.data.isLeader) {
+          status('This page is for organizers and event leaders. Head to <a href="hours.html">Volunteer Hour Submission</a> to log your own hours.');
           return;
         }
-        renderOrganizer(result.data.pending || [], result.data.volunteers || []);
+        renderQueue(result.data.pending || [], result.data.volunteers || [], !!result.data.isOrganizer);
       })
       .catch(function (error) {
         console.warn('Volunteer hours fetch failed:', error);

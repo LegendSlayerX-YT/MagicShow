@@ -29,15 +29,29 @@
    It reuses the same calendar-owner OAuth credentials (now also
    scoped for Sheets — see scripts/google-oauth.mjs).
 
+   Each volunteer gets their own tab, titled "Name (email)" — see
+   "volunteer hours (Google Sheets)" below. That means the organizer's
+   list of volunteers is just the spreadsheet's tab titles (one cheap
+   metadata call, no row data read), and a volunteer's own history is
+   just their one tab instead of a filter over every row ever
+   submitted.
+
    Config:
      vars    — CALENDAR_ID, CALENDAR_TIME_ZONE,
                YOUTUBE_PLAYLIST_ID, YOUTUBE_MAX_RESULTS,
                CALENDAR_SEND_UPDATES, GOOGLE_SIGNIN_CLIENT_ID,
-               GOOGLE_SHEETS_ID, GOOGLE_SHEETS_HOURS_TAB
+               GOOGLE_SHEETS_ID
      secrets — YOUTUBE_API_KEY,
                GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET,
                GOOGLE_OAUTH_REFRESH_TOKEN
    =========================================================== */
+
+import { normalizeEmail } from './util.js';
+import {
+  findVolunteerTab, buildTabTitle, parseTabTitle,
+  sheetsGetSpreadsheetMeta, sheetsCreateVolunteerTab, sheetsGetTabRows,
+  sheetsBatchGetTabRows, sheetsAppendRowToTab, sheetsUpdateTabRange
+} from './hours-sheet.js';
 
 var CACHE_SECONDS = 300;
 var MAX_RANGE_DAYS = 92;
@@ -510,12 +524,19 @@ async function handleSubmitHours(request, env) {
     eventSummary = eventTitle;
   }
 
-  var row = [
-    crypto.randomUUID(), new Date().toISOString(), identity.email, identity.name || identity.email,
-    hours, date, eventSummary, 'pending', '', ''
-  ];
+  var meta = await sheetsGetSpreadsheetMeta(env, token.value);
+  if (meta.error) return noStore(json({ error: meta.error }, meta.status));
 
-  var appended = await sheetsAppendRow(env, token.value, row);
+  var tabTitle = findVolunteerTab(meta.titles, identity.email);
+  if (!tabTitle) {
+    tabTitle = buildTabTitle(identity.name || identity.email, identity.email);
+    var created = await sheetsCreateVolunteerTab(env, token.value, tabTitle);
+    if (created.error) return noStore(json({ error: created.error }, created.status));
+  }
+
+  var row = [crypto.randomUUID(), new Date().toISOString(), hours, date, eventSummary, eventId, 'pending', '', ''];
+
+  var appended = await sheetsAppendRowToTab(env, token.value, tabTitle, row);
   if (appended.error) return noStore(json({ error: appended.error }, appended.status));
 
   return noStore(json({ submitted: true }, 200));
@@ -526,7 +547,7 @@ async function handleSubmitHours(request, env) {
 // organizer) other people's pending submissions.
 async function handleViewHours(request, env) {
   var oauth = readOauthConfig(env);
-  if (!oauth || !env.GOOGLE_SIGNIN_CLIENT_ID || !env.GOOGLE_SHEETS_ID) {
+  if (!oauth || !env.CALENDAR_ID || !env.GOOGLE_SIGNIN_CLIENT_ID || !env.GOOGLE_SHEETS_ID) {
     return noStore(json({ error: 'Volunteer hours is not configured.' }, 503));
   }
 
@@ -540,85 +561,135 @@ async function handleViewHours(request, env) {
   var token = await getAccessToken(oauth);
   if (token.error) return noStore(json({ error: token.error }, token.status));
 
-  var result = await sheetsGetRows(env, token.value);
-  if (result.error) return noStore(json({ error: result.error }, result.status));
+  var meta = await sheetsGetSpreadsheetMeta(env, token.value);
+  if (meta.error) return noStore(json({ error: meta.error }, meta.status));
+
+  // Only tabs that match the "Name (email)" naming this Worker creates are
+  // volunteers — anything else (e.g. a leftover archive tab from before this
+  // per-volunteer layout) is silently ignored rather than shown as a person.
+  var volunteerTabs = meta.titles
+    .map(function (title) { var parsed = parseTabTitle(title); return parsed ? { title: title, name: parsed.name, email: parsed.email } : null; })
+    .filter(Boolean);
 
   // Organizers verify everyone's pending submissions; everyone else only
-  // ever sees their own rows — an organizer's email is verified server-side
+  // ever sees their own tab — an organizer's email is verified server-side
   // above, never claimed by the client (same pattern as isOrganizer on
   // /api/calendar).
   if (isOrganizerEmail(identity.email, env)) {
-    var pending = result.rows
-      .filter(function (row) { return row[7] === 'pending'; })
-      .map(function (row) {
-        return { id: row[0], submittedAt: row[1], email: row[2], name: row[3], hours: row[4], date: row[5], event: row[6] };
-      })
-      .sort(function (a, b) { return Date.parse(a.submittedAt) - Date.parse(b.submittedAt); });
-
-    // Every volunteer who has ever submitted, deduped by email, so the
-    // organizer's person picker only ever lists real submitters — same
-    // "options come from real data, never free text" posture as the event
-    // dropdown and the leader picker.
-    var seenVolunteers = {};
-    var volunteers = [];
-    result.rows.forEach(function (row) {
-      var rowEmail = normalizeEmail(row[2]);
-      if (!rowEmail || seenVolunteers[rowEmail]) return;
-      seenVolunteers[rowEmail] = true;
-      volunteers.push({ email: rowEmail, name: row[3] || rowEmail });
-    });
-    volunteers.sort(function (a, b) { return a.name.localeCompare(b.name); });
+    // The list of volunteer names comes straight from the tab titles — no
+    // row data needs to be read just to populate the person picker.
+    var volunteers = volunteerTabs
+      .map(function (v) { return { email: v.email, name: v.name || v.email }; })
+      .sort(function (a, b) { return a.name.localeCompare(b.name); });
 
     var personParam = normalizeEmail(new URL(request.url).searchParams.get('person') || '');
     if (personParam) {
-      var personEntry = volunteers.filter(function (v) { return v.email === personParam; })[0];
-      if (!personEntry) {
+      var personTab = volunteerTabs.filter(function (v) { return v.email === personParam; })[0];
+      if (!personTab) {
         return noStore(json({ error: 'Unknown volunteer.' }, 404));
       }
-      var personRows = result.rows.filter(function (row) { return normalizeEmail(row[2]) === personParam; });
-      var personTotal = personRows.reduce(function (sum, row) {
-        return row[7] === 'verified' ? sum + (Number(row[4]) || 0) : sum;
+      var personResult = await sheetsGetTabRows(env, token.value, personTab.title);
+      if (personResult.error) return noStore(json({ error: personResult.error }, personResult.status));
+
+      var personTotal = personResult.rows.reduce(function (sum, row) {
+        return row[6] === 'verified' ? sum + (Number(row[2]) || 0) : sum;
       }, 0);
-      var personSubmissions = personRows
+      var personSubmissions = personResult.rows
         .map(function (row) {
-          return { id: row[0], submittedAt: row[1], hours: row[4], date: row[5], event: row[6], status: row[7] };
+          return { id: row[0], submittedAt: row[1], hours: row[2], date: row[3], event: row[4], status: row[6] };
         })
         .sort(function (a, b) { return Date.parse(b.submittedAt) - Date.parse(a.submittedAt); });
 
       return noStore(json({
         isOrganizer: true,
         volunteers: volunteers,
-        person: personEntry,
+        person: { email: personTab.email, name: personTab.name || personTab.email },
         totalHours: Math.round(personTotal * 100) / 100,
         submissions: personSubmissions
       }, 200));
     }
 
+    // The pending queue is the one place that genuinely needs every
+    // volunteer's rows — batched into a single Sheets call rather than one
+    // request per tab.
+    var batch = await sheetsBatchGetTabRows(env, token.value, volunteerTabs.map(function (v) { return v.title; }));
+    if (batch.error) return noStore(json({ error: batch.error }, batch.status));
+
+    var pending = [];
+    volunteerTabs.forEach(function (v) {
+      (batch.byTitle[v.title] || []).forEach(function (row) {
+        if (row[6] !== 'pending') return;
+        pending.push({ id: row[0], submittedAt: row[1], email: v.email, name: v.name || v.email, hours: row[2], date: row[3], event: row[4] });
+      });
+    });
+    pending.sort(function (a, b) { return Date.parse(a.submittedAt) - Date.parse(b.submittedAt); });
+
     return noStore(json({ isOrganizer: true, pending: pending, volunteers: volunteers }, 200));
   }
 
-  var mine = result.rows.filter(function (row) { return normalizeEmail(row[2]) === identity.email; });
-  var totalHours = mine.reduce(function (sum, row) {
-    return row[7] === 'verified' ? sum + (Number(row[4]) || 0) : sum;
+  // Not an organizer, but might still lead one or more events — leaders can
+  // approve hours submitted against the events they lead (see handleLeaders
+  // for how leader picks are stored). This costs one extra Calendar list
+  // call for every non-organizer view; acceptable for a small club site.
+  var leaderLookup = await fetchLeaderEventIds(env, token.value, identity.email);
+  var leaderEventIds = leaderLookup.error ? {} : leaderLookup.ids;
+  var isLeader = Object.keys(leaderEventIds).length > 0;
+
+  var ownTab = findVolunteerTab(meta.titles, identity.email);
+  var ownResult = ownTab ? await sheetsGetTabRows(env, token.value, ownTab) : { rows: [] };
+  if (ownResult.error) return noStore(json({ error: ownResult.error }, ownResult.status));
+
+  var totalHours = ownResult.rows.reduce(function (sum, row) {
+    return row[6] === 'verified' ? sum + (Number(row[2]) || 0) : sum;
   }, 0);
-  var submissions = mine
+  var submissions = ownResult.rows
     .map(function (row) {
-      return { id: row[0], submittedAt: row[1], hours: row[4], date: row[5], event: row[6], status: row[7] };
+      return { id: row[0], submittedAt: row[1], hours: row[2], date: row[3], event: row[4], status: row[6] };
     })
     .sort(function (a, b) { return Date.parse(b.submittedAt) - Date.parse(a.submittedAt); });
 
+  if (!isLeader) {
+    return noStore(json({
+      isOrganizer: false,
+      totalHours: Math.round(totalHours * 100) / 100,
+      submissions: submissions
+    }, 200));
+  }
+
+  // Leader view of the pending queue — same batched read the organizer
+  // queue uses, just filtered down to submissions tied to an event this
+  // person leads (row[5] is the eventId column; see handleSubmitHours).
+  var leaderBatch = await sheetsBatchGetTabRows(env, token.value, volunteerTabs.map(function (v) { return v.title; }));
+  if (leaderBatch.error) return noStore(json({ error: leaderBatch.error }, leaderBatch.status));
+
+  var leaderPending = [];
+  volunteerTabs.forEach(function (v) {
+    (leaderBatch.byTitle[v.title] || []).forEach(function (row) {
+      if (row[6] !== 'pending') return;
+      if (!row[5] || !leaderEventIds[row[5]]) return;
+      leaderPending.push({ id: row[0], submittedAt: row[1], email: v.email, name: v.name || v.email, hours: row[2], date: row[3], event: row[4] });
+    });
+  });
+  leaderPending.sort(function (a, b) { return Date.parse(a.submittedAt) - Date.parse(b.submittedAt); });
+
   return noStore(json({
     isOrganizer: false,
+    isLeader: true,
     totalHours: Math.round(totalHours * 100) / 100,
-    submissions: submissions
+    submissions: submissions,
+    pending: leaderPending
   }, 200));
 }
 
-// Lets an organizer verify or deny one pending submission. Only callable by
-// an email in ORGANIZER_EMAILS, verified the same way as /api/leaders.
+// Lets an organizer, or the leader of the event a submission is tied to,
+// verify or deny one pending submission. Organizer status is verified the
+// same way as /api/leaders; a leader's authorization is checked against the
+// actual event the submission names (its eventId column — see
+// handleSubmitHours), not a cached list, so a leader pick made after the
+// submission still takes effect immediately.
 async function handleDecideHours(request, env) {
   var oauth = readOauthConfig(env);
-  if (!oauth || !env.GOOGLE_SIGNIN_CLIENT_ID || !env.GOOGLE_SHEETS_ID) {
+  if (!oauth || !env.CALENDAR_ID || !env.GOOGLE_SIGNIN_CLIENT_ID || !env.GOOGLE_SHEETS_ID) {
     return noStore(json({ error: 'Volunteer hours is not configured.' }, 503));
   }
 
@@ -650,9 +721,7 @@ async function handleDecideHours(request, env) {
   }
   var identity = await verifyGoogleIdToken(credential, env.GOOGLE_SIGNIN_CLIENT_ID);
   if (identity.error) return noStore(json({ error: identity.error }, identity.status));
-  if (!isOrganizerEmail(identity.email, env)) {
-    return noStore(json({ error: 'Not authorized.' }, 403));
-  }
+  var isOrganizer = isOrganizerEmail(identity.email, env);
 
   var id = typeof body.id === 'string' ? body.id.trim() : '';
   var decision = body.decision === 'verify' ? 'verified' : body.decision === 'deny' ? 'denied' : '';
@@ -663,20 +732,51 @@ async function handleDecideHours(request, env) {
   var token = await getAccessToken(oauth);
   if (token.error) return noStore(json({ error: token.error }, token.status));
 
-  var result = await sheetsGetRows(env, token.value);
-  if (result.error) return noStore(json({ error: result.error }, result.status));
+  var meta = await sheetsGetSpreadsheetMeta(env, token.value);
+  if (meta.error) return noStore(json({ error: meta.error }, meta.status));
 
-  var index = result.rows.findIndex(function (row) { return row[0] === id; });
-  if (index === -1) {
+  var volunteerTitles = meta.titles.filter(function (title) { return parseTabTitle(title); });
+  var batch = await sheetsBatchGetTabRows(env, token.value, volunteerTitles);
+  if (batch.error) return noStore(json({ error: batch.error }, batch.status));
+
+  var targetTitle = null;
+  var rowIndex = -1;
+  volunteerTitles.some(function (title) {
+    var rows = batch.byTitle[title] || [];
+    var i = rows.findIndex(function (row) { return row[0] === id; });
+    if (i === -1) return false;
+    targetTitle = title;
+    rowIndex = i;
+    return true;
+  });
+
+  if (!targetTitle) {
     return noStore(json({ error: 'Unknown submission.' }, 404));
   }
-  if (result.rows[index][7] !== 'pending') {
+  var targetRow = batch.byTitle[targetTitle][rowIndex];
+  if (targetRow[6] !== 'pending') {
     return noStore(json({ error: 'That submission was already decided.' }, 409));
   }
 
-  var rowNumber = index + 2; // row 1 is the header; data starts at row 2
-  var updated = await sheetsUpdateRange(
-    env, token.value, 'H' + rowNumber + ':J' + rowNumber,
+  if (!isOrganizer) {
+    var eventId = targetRow[5];
+    var authorized = false;
+    if (eventId) {
+      var eventPath = 'https://www.googleapis.com/calendar/v3/calendars/' +
+        encodeURIComponent(env.CALENDAR_ID) + '/events/' + encodeURIComponent(eventId);
+      var eventResult = await calendarRequest('GET', eventPath, token.value, null, null);
+      if (!eventResult.error) {
+        authorized = splitDescription(eventResult.body.description || '').leaders.indexOf(identity.email) !== -1;
+      }
+    }
+    if (!authorized) {
+      return noStore(json({ error: 'Not authorized.' }, 403));
+    }
+  }
+
+  var rowNumber = rowIndex + 2; // row 1 is the header; data starts at row 2
+  var updated = await sheetsUpdateTabRange(
+    env, token.value, targetTitle, 'G' + rowNumber + ':I' + rowNumber,
     [decision, identity.email, new Date().toISOString()]
   );
   if (updated.error) return noStore(json({ error: updated.error }, updated.status));
@@ -700,13 +800,6 @@ function eventIsOpen(event) {
   if (Number.isNaN(endsAt) || Number.isNaN(startsAt)) return false;
   if (endsAt < now) return false;
   return startsAt <= now + MAX_RANGE_DAYS * 86400000;
-}
-
-function normalizeEmail(value) {
-  if (typeof value !== 'string') return '';
-  var email = value.trim().toLowerCase();
-  if (email.length > 254) return '';
-  return /^[^\s@,;:<>"]+@[^\s@.,;:<>"]+(\.[^\s@.,;:<>"]+)+$/.test(email) ? email : '';
 }
 
 // Per-isolate, so it's a speed bump rather than a guarantee — Cloudflare
@@ -844,79 +937,6 @@ async function getAccessToken(oauth) {
     expiresAt: now + (payload.expires_in || 3600) * 1000
   };
   return { value: payload.access_token };
-}
-
-/* ---------- volunteer hours (Google Sheets) ----------
-
-   There's no database in this project — the volunteer-hours Sheet plays the
-   same role Calendar plays for events. Same OAuth access token as
-   getAccessToken above (the refresh token now also carries the spreadsheets
-   scope; see scripts/google-oauth.mjs), just pointed at the Sheets API
-   instead of the Calendar API.
-   ------------------------------------------------------ */
-
-var SHEETS_VALUES_BASE = 'https://sheets.googleapis.com/v4/spreadsheets/';
-
-function sheetsTab(env) {
-  return env.GOOGLE_SHEETS_HOURS_TAB || 'Volunteer Hours';
-}
-
-async function sheetsRequest(method, url, accessToken, body) {
-  var init = { method: method, headers: { Authorization: 'Bearer ' + accessToken } };
-  if (body) {
-    init.headers['Content-Type'] = 'application/json';
-    init.body = JSON.stringify(body);
-  }
-
-  var response;
-  try {
-    response = await fetch(url, init);
-  } catch (err) {
-    return { error: 'Sheets request failed.', status: 502 };
-  }
-
-  if (!response.ok) {
-    // Google's body can echo the request; log it, don't return it.
-    var detail = await response.text().catch(function () { return ''; });
-    console.warn('Sheets ' + method + ' failed: ' + response.status + ' ' + detail.slice(0, 500));
-    if (response.status === 404) return { error: 'Volunteer hours sheet not found.', status: 502 };
-    if (response.status === 401 || response.status === 403) {
-      return { error: 'The calendar account cannot edit the volunteer hours sheet.', status: 502 };
-    }
-    return { error: 'Sheets returned ' + response.status + '.', status: 502 };
-  }
-
-  try {
-    return { body: await response.json() };
-  } catch (err) {
-    return { error: 'Sheets returned an unreadable response.', status: 502 };
-  }
-}
-
-// Skips the header row (row 1) — every row here is row index + 2 in the
-// actual sheet. UNFORMATTED_VALUE keeps `hours` a JS number instead of a
-// locale-formatted string.
-async function sheetsGetRows(env, accessToken) {
-  var range = encodeURIComponent(sheetsTab(env) + '!A2:J');
-  var url = SHEETS_VALUES_BASE + encodeURIComponent(env.GOOGLE_SHEETS_ID) +
-    '/values/' + range + '?valueRenderOption=UNFORMATTED_VALUE';
-  var result = await sheetsRequest('GET', url, accessToken, null);
-  if (result.error) return result;
-  return { rows: result.body.values || [] };
-}
-
-async function sheetsAppendRow(env, accessToken, row) {
-  var range = encodeURIComponent(sheetsTab(env) + '!A:J');
-  var url = SHEETS_VALUES_BASE + encodeURIComponent(env.GOOGLE_SHEETS_ID) +
-    '/values/' + range + ':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS';
-  return sheetsRequest('POST', url, accessToken, { values: [row] });
-}
-
-async function sheetsUpdateRange(env, accessToken, a1Range, row) {
-  var range = encodeURIComponent(sheetsTab(env) + '!' + a1Range);
-  var url = SHEETS_VALUES_BASE + encodeURIComponent(env.GOOGLE_SHEETS_ID) +
-    '/values/' + range + '?valueInputOption=RAW';
-  return sheetsRequest('PUT', url, accessToken, { values: [row] });
 }
 
 /* ---------- visitor sign-in (Sign in with Google) ----------
@@ -1069,6 +1089,39 @@ function splitDescription(raw) {
   var emails = Array.isArray(parsed && parsed.emails) ?
     parsed.emails.filter(function (email) { return typeof email === 'string'; }) : [];
   return { visible: raw.slice(0, idx), leaders: emails };
+}
+
+// The set of event ids a visitor is a leader of, used to build their leader
+// pending queue in handleViewHours. A generous lookback (well beyond the
+// 90-day window hours.js offers in the submission dropdown) means a
+// submission still shows up here even if a fair amount of time has passed
+// since the event happened. Authorization on the actual decide (see
+// handleDecideHours) never depends on this list — it re-checks the one
+// event a submission names, so a narrower or stale list here only affects
+// what a leader is conveniently shown, never what they're allowed to do.
+var LEADER_LOOKUP_LOOKBACK_DAYS = 365;
+
+async function fetchLeaderEventIds(env, accessToken, email) {
+  var day = 86400000;
+  var now = Date.now();
+  var params = new URLSearchParams({
+    singleEvents: 'true',
+    timeMin: new Date(now - LEADER_LOOKUP_LOOKBACK_DAYS * day).toISOString(),
+    timeMax: new Date(now + day).toISOString(),
+    fields: 'items(id,description)'
+  });
+  var upstream = 'https://www.googleapis.com/calendar/v3/calendars/' +
+    encodeURIComponent(env.CALENDAR_ID) + '/events?' + params.toString();
+
+  var result = await calendarRequest('GET', upstream, accessToken, null, null);
+  if (result.error) return { error: result.error, status: result.status };
+
+  var ids = {};
+  (result.body.items || []).forEach(function (event) {
+    var leaders = splitDescription(event.description || '').leaders;
+    if (leaders.indexOf(email) !== -1) ids[event.id] = true;
+  });
+  return { ids: ids };
 }
 
 function buildDescription(visible, leaderEmails) {

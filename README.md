@@ -20,8 +20,9 @@ MagicShow/
 ├── wrangler.jsonc          # Cloudflare Workers config (assets + Worker + vars)
 ├── .dev.vars.example       # Template for local API keys — copy to .dev.vars
 ├── scripts/
-│   ├── google-oauth.mjs       # One-time consent → refresh token (calendar + sheets)
-│   └── create-hours-sheet.mjs # One-time: creates the volunteer-hours Google Sheet
+│   ├── google-oauth.mjs           # One-time consent → refresh token (calendar + sheets)
+│   ├── create-hours-sheet.mjs     # One-time: creates the volunteer-hours Google Sheet
+│   └── migrate-hours-to-tabs.mjs  # One-time: splits old shared rows into per-volunteer tabs
 └── src/
     ├── worker/
     │   └── index.js        # /api/* relay; holds the Google API keys
@@ -80,7 +81,6 @@ Non-secret settings live in `wrangler.jsonc` under `vars`:
 | `GOOGLE_SIGNIN_CLIENT_ID` | OAuth Client ID for Sign in with Google — see [below](#sign-in-with-google) |
 | `ORGANIZER_EMAILS` | Comma-separated emails treated as organizers — no Register button, gets leader-picking + the Volunteer Hours verify queue instead |
 | `GOOGLE_SHEETS_ID` | Spreadsheet ID backing Volunteer Hours — see [below](#volunteer-hours) |
-| `GOOGLE_SHEETS_HOURS_TAB` | Tab name within that spreadsheet (optional, defaults to `Volunteer Hours`) |
 
 Calendar reads authenticate as the calendar's owner over OAuth — see
 "Event registration" below for how that credential is set up; it backs both
@@ -228,6 +228,24 @@ that volunteer's running total, shown back to them on the Submission page.
 The dropdown under the account avatar always links to whichever page applies
 to the signed-in visitor.
 
+**Event leaders** — the guests an organizer marks as leading a given event
+(see "Event registration" → leader picks above) — get that same Approval
+queue, scoped to submissions tied to the event(s) they lead: a leader's
+authorization is checked against the actual Calendar event a submission
+names (its `eventId` column below), not a separately-maintained list, so
+picking or un-picking a leader takes effect on the next decide immediately.
+A leader who isn't also an organizer still lands on the Submission page to
+log their own hours — it just shows a link over to the Approval page for the
+event(s) they lead. Submissions with no picked event (the free-text case)
+can only be decided by an organizer, since there's no event to check
+leadership against.
+
+Each volunteer gets their **own tab** in the spreadsheet, titled `Name
+(email)` — created automatically the first time they submit. That means the
+organizer's volunteer picker just reads the spreadsheet's tab titles (one
+cheap metadata call), and a volunteer's own history is just their one tab
+instead of a filter over every row anyone has ever submitted.
+
 ### Why this needs the same OAuth credential as Calendar
 
 Same reasoning as event registration: writing to a Sheet the club owns needs
@@ -251,27 +269,51 @@ Sheets scope added alongside the Calendar one.
    ```bash
    node scripts/create-hours-sheet.mjs
    ```
-   This creates a spreadsheet titled "Gasp Machine — Volunteer Hours" with one
-   tab (`Volunteer Hours`) and a header row, and prints the spreadsheet ID.
+   This creates an empty spreadsheet titled "Gasp Machine — Volunteer Hours"
+   and prints the spreadsheet ID — no tabs to set up by hand, since the
+   Worker creates one per volunteer on demand.
 3. Paste that ID into `wrangler.jsonc` → `vars.GOOGLE_SHEETS_ID`, then
    `./deploy.sh`.
 
+### Migrating from the old shared-tab layout
+
+Earlier versions of this site kept every volunteer's rows in that one shared
+`Volunteer Hours` tab. If you already have data there, split it into
+per-volunteer tabs once with:
+
+```bash
+node scripts/migrate-hours-to-tabs.mjs
+```
+
+It reads every row out of `Volunteer Hours`, groups them by volunteer, and
+creates each volunteer's tab with their history already in it — using the
+same naming logic the Worker itself uses, so the result is identical to what
+you'd get if they'd submitted those hours fresh under the new layout. The old
+`Volunteer Hours` tab is left in place untouched (the Worker no longer reads
+it — see `parseTabTitle` in `src/worker/index.js`); once you've spot-checked
+the new tabs you can archive or delete it by hand. Safe to re-run — a
+volunteer who already has a tab is skipped rather than getting duplicate
+rows.
+
 ### Sheet layout
 
-One tab (`GOOGLE_SHEETS_HOURS_TAB`, default `Volunteer Hours`), header row 1,
-data from row 2 — so it's readable directly in Sheets, not just through the
-site:
+One tab per volunteer, titled `Name (email)` (built by `buildTabTitle` in
+`src/worker/index.js` — the email keeps the title unique even if two
+volunteers share a name). Header row 1, data from row 2 in each tab — so it's
+readable directly in Sheets, not just through the site:
 
 | Column | Meaning |
 | --- | --- |
 | `id` | UUID the Worker generates on submit — how `/api/hours/decide` finds the row |
 | `submittedAt` | ISO timestamp of the submission |
-| `email` / `name` | From the volunteer's verified Google sign-in |
 | `hours` | 0–24, entered by the volunteer |
 | `date` | The date they volunteered, `YYYY-MM-DD` |
 | `event` | Resolved server-side from the picked Calendar event's real `summary` — never trusted as free text from the client |
+| `eventId` | The picked Calendar event's id, blank when the volunteer typed a free-text title instead — what `/api/hours/decide` checks event leaders against |
 | `status` | `pending` \| `verified` \| `denied` |
 | `decidedBy` / `decidedAt` | The organizer's email + when, filled in on verify/deny |
+
+There's no `email`/`name` column — the tab itself is the volunteer.
 
 ---
 
