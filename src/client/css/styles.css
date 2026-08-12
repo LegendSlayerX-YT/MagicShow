@@ -1034,10 +1034,30 @@ footer {
   text-transform: uppercase;
   border: 1.5px solid currentColor;
 }
-.hours-status[title] { cursor: help; }
+.hours-status[data-tooltip] { cursor: help; }
 .hours-status--pending { color: #ffcf7a; }
 .hours-status--verified { color: #8fe0a4; }
 .hours-status--denied { color: #ffb3b7; }
+
+.hours-tooltip {
+  position: fixed;
+  z-index: 1000;
+  max-width: 260px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--maroon-dark);
+  border: 1px solid var(--cream-dim);
+  color: var(--cream);
+  font-family: 'Poppins', sans-serif;
+  font-size: 0.8rem;
+  font-weight: 300;
+  line-height: 1.4;
+  text-transform: none;
+  letter-spacing: normal;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+.hours-tooltip[hidden] { display: none; }
 
 .hours-lookup {
   max-width: 720px;
