@@ -537,12 +537,16 @@ async function handleSubmitHours(request, env) {
     if (created.error) return noStore(json({ error: created.error }, created.status));
   }
 
-  var row = [crypto.randomUUID(), new Date().toISOString(), hours, date, eventSummary, eventId, 'pending', '', ''];
+  var submittedAt = new Date().toISOString();
+  var row = [crypto.randomUUID(), submittedAt, hours, date, eventSummary, eventId, 'pending', '', ''];
 
   var appended = await sheetsAppendRowToTab(env, token.value, tabTitle, row);
   if (appended.error) return noStore(json({ error: appended.error }, appended.status));
 
-  return noStore(json({ submitted: true }, 200));
+  // Handed back so the client can splice the new row into its own list
+  // in place (see hours.js submitHours) instead of re-fetching everything.
+  var item = { id: row[0], submittedAt: submittedAt, hours: hours, date: date, event: eventSummary, eventId: eventId, status: 'pending' };
+  return noStore(json({ submitted: true, item: item }, 200));
 }
 
 // Always requires a credential — unlike /api/calendar, there's no anonymous
@@ -937,7 +941,10 @@ async function handleListAreas(request, env) {
   var chart = await getOrgChart(env, token.value);
   if (chart.error) return noStore(json({ error: chart.error }, chart.status));
 
-  return noStore(json({ areas: listUsableAreas(identity.email, chart) }, 200));
+  return noStore(json({
+    areas: listUsableAreas(identity.email, chart),
+    isOrganizer: isTopManager(identity.email, chart)
+  }, 200));
 }
 
 // Only events the Calendar page actually shows can be registered for, so a

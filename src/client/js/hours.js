@@ -215,7 +215,22 @@
     var form = document.getElementById('hours-form');
     form.addEventListener('submit', function (evt) {
       evt.preventDefault();
-      submitHours(evt.target);
+      submitHours(evt.target, function (item) {
+        // Splice the new row into the already-loaded list instead of
+        // re-fetching /api/hours and the calendar dropdown — the server
+        // handed back everything needed to render it (see handleSubmitHours).
+        submissions.unshift(item);
+        if (item.eventId) {
+          delete eventsById[item.eventId];
+          var options = form.eventId.options;
+          for (var i = options.length - 1; i >= 0; i--) {
+            if (options[i].value === item.eventId) { options.remove(i); break; }
+          }
+        }
+        form.reset();
+        syncEventTitleField();
+        refresh();
+      });
     });
 
     // No event selected from the calendar dropdown ("— enter it myself —")
@@ -264,7 +279,7 @@
     refresh();
   }
 
-  function submitHours(form) {
+  function submitHours(form, onSuccess) {
     var auth = window.GoogleAuth;
     var statusEl = document.getElementById('hours-form-status');
     var button = form.querySelector('button[type="submit"]');
@@ -303,7 +318,7 @@
         }
         statusEl.textContent = 'Submitted — waiting on verification.';
         statusEl.setAttribute('data-state', 'success');
-        loadPanel();
+        onSuccess(result.data.item);
       })
       .catch(function (error) {
         console.warn('Submitting hours failed:', error);
